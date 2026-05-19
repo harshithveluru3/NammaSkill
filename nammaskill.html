@@ -1,0 +1,1708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Namma-Skill</title>
+<link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+<!-- Firebase SDKs -->
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
+<script>
+// ===================== FIREBASE INIT =====================
+const firebaseConfig = {
+  apiKey: "AIzaSyDFSmGko4VNsrn_drnCUSAAi4lazdqq2xY",
+  authDomain: "namma-skill-4d3dc.firebaseapp.com",
+  projectId: "namma-skill-4d3dc",
+  storageBucket: "namma-skill-4d3dc.firebasestorage.app",
+  messagingSenderId: "818117070546",
+  appId: "1:818117070546:android:af447a78bb047dad1d270b"
+};
+firebase.initializeApp(firebaseConfig);
+const db   = firebase.firestore();
+const auth = firebase.auth();
+</script>
+<!-- EmailJS -->
+<script src="https://cdn.jsdelivr.net/npm/@emailjs/browser@4/dist/email.min.js"></script>
+<script>
+// ===================== LOGIN SYSTEM (FIREBASE) =====================
+let currentRole = 'student'; // 'student' | 'center'
+let authTab = 'phone';       // 'phone' | 'email'
+let emailMode = 'login';     // 'login' | 'signup'
+let pendingPhone = '';
+let pendingName = '';
+let generatedOTP = '';
+
+// Simulated user store (localStorage-backed)
+function getUsers(){ try{ return JSON.parse(localStorage.getItem('ns_users')||'{}'); }catch(e){return{};} }
+function saveUsers(u){ try{ localStorage.setItem('ns_users',JSON.stringify(u)); }catch(e){} }
+function getSession(){ try{ return JSON.parse(localStorage.getItem('ns_session')||'null'); }catch(e){return null;} }
+function saveSession(s){ try{ localStorage.setItem('ns_session',JSON.stringify(s)); }catch(e){} }
+function clearSession(){ try{ localStorage.removeItem('ns_session'); }catch(e){} }
+
+// Center credentials (demo)
+const CENTER_ACCOUNTS = {
+  'bengaluruiti@svit.edu':  {password:'center123', name:'Bengaluru ITI Center', centerIdx:0},
+  'mysuruiti@svit.edu':     {password:'center123', name:'Mysuru Skill Hub', centerIdx:4},
+  'nsdc@svit.edu':          {password:'center123', name:'NSDC Hub – Koramangala', centerIdx:2},
+  'pmkk@svit.edu':          {password:'center123', name:'PMKK Bengaluru South', centerIdx:3},
+  'hubballi@svit.edu':      {password:'center123', name:'Govt. ITI Hubballi', centerIdx:5},
+};
+
+function initLogin(){
+  const session = getSession();
+  if(session){
+    if(session.role === 'center'){
+      showCenterDash(session);
+    } else {
+      applyStudentSession(session);
+      hideLoginWall();
+    }
+    listenSeats();
+    return;
+  }
+  document.getElementById('loginWall').classList.remove('hide');
+}
+
+function setRole(role){
+  currentRole = role;
+  document.getElementById('roleStudent').classList.toggle('active', role==='student');
+  document.getElementById('roleCenter').classList.toggle('active', role==='center');
+  const badge = role==='center' ? 'center-badge' : 'user-badge';
+  const label = role==='center' ? '🏭 Skill Center Login' : '🎓 Student Login';
+  document.getElementById('otpRoleBadge').className = badge;
+  document.getElementById('otpRoleBadge').textContent = label;
+  document.getElementById('emailRoleBadge').className = badge;
+  document.getElementById('emailRoleBadge').textContent = label;
+  // Centers must use email login
+  if(role==='center'){ setAuthTab('email'); }
+}
+
+function setAuthTab(tab){
+  authTab = tab;
+  document.getElementById('tabPhone').classList.toggle('active', tab==='phone');
+  document.getElementById('tabEmail').classList.toggle('active', tab==='email');
+  document.getElementById('stepPhone').classList.toggle('active', tab==='phone');
+  document.getElementById('stepOTP').classList.remove('active');
+  document.getElementById('stepEmail').classList.toggle('active', tab==='email');
+}
+
+function setEmailMode(mode){
+  emailMode = mode;
+  document.getElementById('emailTabLogin').classList.toggle('active', mode==='login');
+  document.getElementById('emailTabSignup').classList.toggle('active', mode==='signup');
+  document.getElementById('emailActionBtn').textContent = mode==='login' ? 'Login →' : 'Sign Up & Continue →';
+  document.getElementById('lwEmailName').style.display = mode==='signup' ? 'block' : 'none';
+}
+
+function togglePw(){
+  const inp = document.getElementById('lwPw');
+  inp.type = inp.type==='password' ? 'text' : 'password';
+}
+
+// ── Phone / OTP ──
+function sendOTP(){
+  const phone = document.getElementById('lwPhone').value.trim();
+  const name  = document.getElementById('lwPhoneName').value.trim();
+  if(!/^\d{10}$/.test(phone)){ toast('e','Enter a valid 10-digit mobile number'); return; }
+  if(!name){ toast('e','Please enter your full name'); return; }
+  pendingPhone = phone;
+  pendingName  = name;
+  document.getElementById('otpPhoneDisplay').textContent = '+91 ' + phone;
+
+  // Firebase Phone Auth
+  if(!window.recaptchaVerifier){
+    window.recaptchaVerifier = new firebase.auth.RecaptchaVerifier('lwPhone', {
+      size: 'invisible',
+      callback: () => {}
+    });
+  }
+  auth.signInWithPhoneNumber('+91' + phone, window.recaptchaVerifier)
+    .then(confirmResult => {
+      window.confirmationResult = confirmResult;
+      document.getElementById('stepPhone').classList.remove('active');
+      document.getElementById('stepOTP').classList.add('active');
+      ['o1','o2','o3','o4'].forEach(id=>document.getElementById(id).value='');
+      document.getElementById('o1').focus();
+      toast('s','📱 OTP sent to +91 ' + phone);
+    })
+    .catch(err => {
+      console.warn('Phone auth error:', err);
+      // Fallback to demo OTP if Firebase phone auth not enabled
+      generatedOTP = '1234';
+      window.confirmationResult = null;
+      document.getElementById('stepPhone').classList.remove('active');
+      document.getElementById('stepOTP').classList.add('active');
+      ['o1','o2','o3','o4'].forEach(id=>document.getElementById(id).value='');
+      document.getElementById('o1').focus();
+      toast('i','📱 Demo OTP: 1234 (Enable Phone Auth in Firebase for real OTP)');
+    });
+}
+
+function otpNext(el, nextId){
+  if(el.value.length===1 && nextId) document.getElementById(nextId).focus();
+  if(!nextId){
+    const otp = ['o1','o2','o3','o4'].map(id=>document.getElementById(id).value).join('');
+    if(otp.length===4) verifyOTP();
+  }
+}
+
+function goBackToPhone(){
+  document.getElementById('stepOTP').classList.remove('active');
+  document.getElementById('stepPhone').classList.add('active');
+}
+
+function verifyOTP(){
+  const entered = ['o1','o2','o3','o4'].map(id=>document.getElementById(id).value).join('');
+  if(window.confirmationResult){
+    // Real Firebase OTP verification
+    window.confirmationResult.confirm(entered)
+      .then(async result => {
+        const user = result.user;
+        const session = { role:'student', name:pendingName, phone:pendingPhone, uid:user.uid, loginMethod:'otp' };
+        saveSession(session);
+        await saveUserToFirebase(user.uid, { name:pendingName, phone:pendingPhone, role:'student', createdAt: new Date().toISOString() });
+        applyStudentSession(session);
+        hideLoginWall();
+        listenSeats();
+        toast('s','✅ Welcome, '+pendingName+'!');
+      })
+      .catch(() => toast('e','Wrong OTP. Please try again.'));
+  } else {
+    // Demo fallback
+    if(entered !== generatedOTP){ toast('e','Wrong OTP. Try 1234'); return; }
+    const session = { role:'student', name:pendingName, phone:pendingPhone, loginMethod:'otp' };
+    saveSession(session);
+    applyStudentSession(session);
+    hideLoginWall();
+    listenSeats();
+    toast('s','✅ Welcome, '+pendingName+'!');
+  }
+}
+
+// ── Email auth ──
+function emailAuth(){
+  const email = document.getElementById('lwEmail').value.trim().toLowerCase();
+  const pw    = document.getElementById('lwPw').value;
+  const name  = document.getElementById('lwEmailName').value.trim();
+  if(!email || !email.includes('@')){ toast('e','Enter a valid email'); return; }
+  if(pw.length < 6){ toast('e','Password must be at least 6 characters'); return; }
+
+  // Check center accounts first (stored in Firestore)
+  if(CENTER_ACCOUNTS[email]){
+    const ca = CENTER_ACCOUNTS[email];
+    auth.signInWithEmailAndPassword(email, pw)
+      .then(async result => {
+        const session = { role:'center', name:ca.name, email, centerIdx:ca.centerIdx, uid:result.user.uid };
+        saveSession(session);
+        showCenterDash(session);
+        listenSeats();
+      })
+      .catch(() => {
+        // Try creating center account if first login
+        auth.createUserWithEmailAndPassword(email, pw)
+          .then(async result => {
+            const session = { role:'center', name:ca.name, email, centerIdx:ca.centerIdx, uid:result.user.uid };
+            await saveUserToFirebase(result.user.uid, { name:ca.name, email, role:'center', centerName:ca.name });
+            saveSession(session);
+            showCenterDash(session);
+            listenSeats();
+          })
+          .catch(err => toast('e', err.message));
+      });
+    return;
+  }
+
+  if(emailMode === 'signup'){
+    if(!name){ toast('e','Please enter your full name'); return; }
+    auth.createUserWithEmailAndPassword(email, pw)
+      .then(async result => {
+        const user = result.user;
+        await saveUserToFirebase(user.uid, { name, email, role:'student', createdAt: new Date().toISOString() });
+        const session = { role:'student', name, email, uid:user.uid, loginMethod:'email' };
+        saveSession(session);
+        applyStudentSession(session);
+        hideLoginWall();
+        listenSeats();
+        toast('s','🎉 Account created! Welcome, '+name+'!');
+      })
+      .catch(err => toast('e', err.message.replace('Firebase: ','')));
+  } else {
+    auth.signInWithEmailAndPassword(email, pw)
+      .then(async result => {
+        const user = result.user;
+        const doc = await db.collection('users').doc(user.uid).get();
+        const data = doc.exists ? doc.data() : { name: email.split('@')[0] };
+        const session = { role: data.role||'student', name: data.name||email.split('@')[0], email, uid:user.uid, loginMethod:'email', centerIdx: data.centerIdx };
+        saveSession(session);
+        if(session.role === 'center'){
+          showCenterDash(session);
+        } else {
+          applyStudentSession(session);
+          hideLoginWall();
+        }
+        listenSeats();
+        toast('s','✅ Welcome back, '+session.name+'!');
+      })
+      .catch(err => toast('e', err.message.replace('Firebase: ','')));
+  }
+}
+
+function applyStudentSession(session){
+  document.getElementById('profileName').textContent = session.name;
+  document.getElementById('profileSub').textContent  = session.phone ? '📱 '+session.phone : '✉️ '+session.email;
+  document.getElementById('profileAvatar').textContent = session.name[0].toUpperCase();
+  // Pre-fill apply form
+  document.getElementById('appName').value = session.name;
+  if(session.phone) document.getElementById('appPhone').value = session.phone;
+}
+
+function skipLogin(){
+  hideLoginWall();
+  toast('i','Browsing as guest — register anytime!');
+}
+
+function hideLoginWall(){
+  document.getElementById('loginWall').classList.add('hide');
+}
+
+// ── Logout (student) ──
+function studentLogout(){
+  clearSession();
+  document.getElementById('profileName').textContent = 'Guest User';
+  document.getElementById('profileSub').textContent  = 'Register to get batch alerts';
+  document.getElementById('profileAvatar').textContent = '?';
+  document.getElementById('loginWall').classList.remove('hide');
+  // Reset login form
+  document.getElementById('stepPhone').classList.add('active');
+  document.getElementById('stepOTP').classList.remove('active');
+  document.getElementById('stepEmail').classList.remove('active');
+  setRole('student'); setAuthTab('phone');
+}
+
+// ═══════════ CENTER DASHBOARD ═══════════
+function showCenterDash(session){
+  hideLoginWall();
+  document.getElementById('centerDash').classList.remove('hide');
+  document.getElementById('cdCenterName').textContent = session.name;
+  document.getElementById('cdCenterEmail').textContent = session.email || '';
+  renderCenterDash(session);
+}
+
+function centerLogout(){
+  clearSession();
+  document.getElementById('centerDash').classList.add('hide');
+  document.getElementById('loginWall').classList.remove('hide');
+  setRole('center'); setAuthTab('email');
+}
+
+function _renderCenterDashUI(session, centerIdx, center){
+  const myApps = applications.filter(a => a.center === center.name);
+  const approved = myApps.filter(a => a.status === 'Approved ✓').length;
+  const pending  = myApps.filter(a => a.status === 'Submitted ✓').length;
+  document.getElementById('cdTotalApps').textContent = myApps.length;
+  document.getElementById('cdPending').textContent   = pending;
+  document.getElementById('cdApproved').textContent  = approved;
+  const myCourses = COURSES.filter(c => c.center === center.name);
+  document.getElementById('cdSeatsList').innerHTML = myCourses.length
+    ? myCourses.map((c,i) => `
+        <div class="cd-seats-row">
+          <div class="cd-seats-label"><strong>${c.title}</strong><br>${c.seats - c.enrolled} / ${c.seats} seats available</div>
+          <input class="cd-seats-input" id="seat_${c.id}" type="number" value="${c.seats - c.enrolled}" min="0" max="${c.seats}">
+          <button class="cd-update-btn" onclick="updateSeats(${c.id})">Update</button>
+        </div>`).join('')
+    : '<div class="cd-empty">No courses assigned to this center yet.</div>';
+  const typeColors={'Govt ITI':'var(--blue)','NSDC':'var(--green)','PMKVY / PMKK':'var(--accent)','NSTI':'var(--purple)'};
+  document.getElementById('cdAppsList').innerHTML = myApps.length
+    ? myApps.map((app,i) => `
+        <div class="cd-app-card" id="cdapp_${app.id||i}">
+          <div class="cd-app-name">${app.name}</div>
+          <div class="cd-app-meta">
+            📱 ${app.phone} · 🎓 ${app.edu||app.education||''}<br>
+            📍 ${app.district}, ${app.state}<br>
+            📚 ${app.course||app.courseTitle} · 📅 ${app.date||''}<br>
+            ${app.reason && app.reason !== 'Not provided' ? '💬 "'+app.reason+'"' : ''}
+          </div>
+          <div class="cd-app-footer">
+            <div class="cd-btn cd-btn-g" onclick="approveApp('${app.id||app.docId||i}')">✅ Approve</div>
+            <div class="cd-btn cd-btn-r" onclick="rejectApp('${app.id||app.docId||i}')">❌ Reject</div>
+            <div class="cd-btn cd-btn-b" onclick="callApplicant('${app.phone}')">📞 Call</div>
+          </div>
+        </div>`).join('')
+    : '<div class="cd-empty">No applications received yet.</div>';
+}
+
+function renderCenterDash(session){
+  const centerIdx = session.centerIdx || 0;
+  const center = CENTERS[centerIdx];
+
+  // Stats
+  // Load from Firebase
+  loadCenterApplications(center.name).then(fbApps => {
+    if(fbApps.length > 0){
+      fbApps.forEach(fa => { if(!applications.find(a=>a.id===fa.id)) applications.push(fa); });
+    }
+    _renderCenterDashUI(session, centerIdx, center);
+  });
+  // Also show local immediately
+  const myApps = applications.filter(a => a.center === center.name);
+  const approved = myApps.filter(a => a.status === 'Approved ✓').length;
+  const pending  = myApps.filter(a => a.status === 'Submitted ✓').length;
+  document.getElementById('cdTotalApps').textContent = myApps.length;
+  document.getElementById('cdPending').textContent   = pending;
+  document.getElementById('cdApproved').textContent  = approved;
+
+  // Seat management — show courses at this center
+  const myCourses = COURSES.filter(c => c.center === center.name);
+  document.getElementById('cdSeatsList').innerHTML = myCourses.length
+    ? myCourses.map((c,i) => `
+        <div class="cd-seats-row">
+          <div class="cd-seats-label"><strong>${c.title}</strong><br>${c.seats - c.enrolled} / ${c.seats} seats available</div>
+          <input class="cd-seats-input" id="seat_${c.id}" type="number" value="${c.seats - c.enrolled}" min="0" max="${c.seats}">
+          <button class="cd-update-btn" onclick="updateSeats(${c.id})">Update</button>
+        </div>`).join('')
+    : '<div class="cd-empty">No courses assigned to this center yet.</div>';
+
+  // Applications list
+  document.getElementById('cdAppsList').innerHTML = myApps.length
+    ? myApps.map((app,i) => `
+        <div class="cd-app-card" id="cdapp_${app.id}">
+          <div class="cd-app-name">${app.name}</div>
+          <div class="cd-app-meta">
+            📱 ${app.phone} · 🎓 ${app.edu}<br>
+            📍 ${app.district}, ${app.state}<br>
+            📚 ${app.course} · 📅 ${app.date}<br>
+            ${app.reason && app.reason !== 'Not provided' ? '💬 "'+app.reason+'"' : ''}
+          </div>
+          <div class="cd-app-footer">
+            <div class="cd-btn cd-btn-g" onclick="approveApp('${app.id}')">✅ Approve</div>
+            <div class="cd-btn cd-btn-r" onclick="rejectApp('${app.id}')">❌ Reject</div>
+            <div class="cd-btn cd-btn-b" onclick="callApplicant('${app.phone}')">📞 Call</div>
+          </div>
+        </div>`).join('')
+    : '<div class="cd-empty">No applications received yet.</div>';
+}
+
+function updateSeats(courseId){
+  const c = COURSES.find(x => x.id === courseId);
+  const newLeft = parseInt(document.getElementById('seat_'+courseId).value) || 0;
+  c.enrolled = c.seats - newLeft;
+  updateSeatsFirebase(courseId, c.enrolled);
+  toast('s','✅ Seats updated for '+c.title);
+  renderHomeCourses(); renderAllCourses();
+}
+
+function approveApp(appId){
+  const app = applications.find(a => String(a.id) === String(appId));
+  if(app){ app.status = 'Approved ✓'; toast('s','✅ Application approved for '+app.name); }
+  const session = getSession();
+  if(session) renderCenterDash(session);
+  renderProfileApps();
+}
+
+function rejectApp(appId){
+  const app = applications.find(a => String(a.id) === String(appId));
+  if(app){ app.status = 'Rejected ✗'; toast('e','Application rejected for '+app.name); }
+  const session = getSession();
+  if(session) renderCenterDash(session);
+  renderProfileApps();
+}
+
+function callApplicant(phone){
+  window.location.href = 'tel:+91'+phone;
+}
+
+</script>
+<style>
+:root{
+  --bg:#060a14;--bg2:#0b1120;--card:#111827;--card2:#162032;
+  --border:#1d2d44;--border2:#243650;
+  --accent:#ff6b2b;--accent-glow:rgba(255,107,43,0.2);
+  --blue:#4f8ef7;--green:#22c98a;--yellow:#f6c347;--red:#f05252;--purple:#a78bfa;
+  --text:#e8f0fe;--text2:#7b93b8;--text3:#3d5470;
+  --r:16px;--r-sm:10px;--nav-h:68px;--status-h:44px;--header-h:58px;
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+html,body{height:100%;overflow:hidden;background:#000}
+body{font-family:'Outfit',sans-serif;color:var(--text);display:flex;flex-direction:column;max-width:430px;margin:0 auto;background:var(--bg);box-shadow:0 0 60px rgba(0,0,0,.9)}
+#splash{position:fixed;inset:0;z-index:9999;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;transition:opacity .5s ease 2.4s;pointer-events:none}
+#splash.hide{opacity:0}
+.sp-icon{width:86px;height:86px;background:linear-gradient(135deg,var(--accent),#ff9f6b);border-radius:24px;display:grid;place-items:center;font-size:2.5rem;box-shadow:0 0 50px var(--accent-glow);animation:popIn .6s cubic-bezier(.34,1.56,.64,1) .2s both}
+.sp-name{font-family:'Nunito',sans-serif;font-size:1.9rem;font-weight:900;animation:fadeUp .5s ease .6s both}
+.sp-name span{color:var(--accent)}
+.sp-sub{font-size:.82rem;color:var(--text2);animation:fadeUp .5s ease .8s both}
+.sp-bar{width:110px;height:3px;background:var(--border2);border-radius:99px;overflow:hidden;margin-top:20px;animation:fadeUp .4s ease 1s both}
+.sp-fill{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--blue));border-radius:99px;animation:fillBar 1.6s ease 1.1s forwards}
+@keyframes popIn{from{opacity:0;transform:scale(.3)}to{opacity:1;transform:scale(1)}}
+@keyframes fadeUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+@keyframes fillBar{to{width:100%}}
+.status-bar{height:var(--status-h);background:var(--bg);display:flex;align-items:center;justify-content:space-between;padding:0 18px;flex-shrink:0;z-index:100}
+#clock{font-size:.75rem;font-weight:700;color:var(--text2)}
+.status-right{display:flex;align-items:center;gap:5px}
+.sig{display:flex;align-items:flex-end;gap:1.5px;height:11px}
+.sig span{width:3px;background:var(--text2);border-radius:1px}
+.sig span:nth-child(1){height:30%}.sig span:nth-child(2){height:55%}.sig span:nth-child(3){height:78%}.sig span:nth-child(4){height:100%}
+.bat{width:20px;height:10px;border:1.5px solid var(--text2);border-radius:2.5px;padding:1.5px 1.5px;position:relative}
+.bat::after{content:'';position:absolute;right:-4px;top:50%;transform:translateY(-50%);width:2px;height:5px;background:var(--text2);border-radius:0 2px 2px 0}
+.bat-f{height:100%;background:var(--green);border-radius:1px;width:70%}
+.fourG{font-size:.65rem;font-weight:700;color:var(--text2)}
+.app-header{height:var(--header-h);background:rgba(6,10,20,.93);backdrop-filter:blur(20px);border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 16px;flex-shrink:0;z-index:100}
+.h-logo{display:flex;align-items:center;gap:9px}
+.h-logo-icon{width:34px;height:34px;background:linear-gradient(135deg,var(--accent),#ff9860);border-radius:11px;display:grid;place-items:center;font-size:1.05rem;box-shadow:0 0 14px var(--accent-glow)}
+.h-logo-name{font-family:'Nunito',sans-serif;font-weight:900;font-size:1.15rem}
+.h-logo-name span{color:var(--accent)}
+.h-actions{display:flex;gap:7px}
+.icon-btn{width:36px;height:36px;border-radius:10px;background:var(--card);border:1px solid var(--border);display:grid;place-items:center;cursor:pointer;font-size:.95rem;position:relative;transition:background .15s}
+.icon-btn:active{background:var(--card2)}
+.badge{position:absolute;top:-4px;right:-4px;min-width:16px;height:16px;border-radius:8px;background:var(--accent);border:2px solid var(--bg);font-size:.55rem;font-weight:800;color:#fff;display:grid;place-items:center;padding:0 3px}
+.scroll-area{flex:1;overflow-y:auto;overflow-x:hidden;-webkit-overflow-scrolling:touch}
+.scroll-area::-webkit-scrollbar{display:none}
+.bottom-nav{height:var(--nav-h);background:rgba(6,10,20,.96);backdrop-filter:blur(24px);border-top:1px solid var(--border);display:flex;align-items:center;padding:0 4px;flex-shrink:0;z-index:100}
+.nav-item{flex:1;display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 4px 4px;cursor:pointer;border-radius:12px;position:relative;transition:background .15s}
+.nav-item:active{background:rgba(255,107,43,.08)}
+.nav-icon{font-size:1.25rem;transition:transform .2s}
+.nav-label{font-size:.58rem;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.04em;transition:color .2s}
+.nav-item.active .nav-icon{transform:scale(1.12)}
+.nav-item.active .nav-label{color:var(--accent)}
+.nav-bar{position:absolute;top:0;left:50%;transform:translateX(-50%);height:3px;width:0;background:var(--accent);border-radius:0 0 3px 3px;transition:width .25s cubic-bezier(.34,1.56,.64,1)}
+.nav-item.active .nav-bar{width:26px}
+.screen{display:none;padding-bottom:8px}
+.screen.active{display:block;animation:screenIn .22s ease}
+@keyframes screenIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.screen-hdr{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:50;background:rgba(6,10,20,.94);backdrop-filter:blur(16px)}
+.screen-hdr-title{font-family:'Nunito',sans-serif;font-size:1.05rem;font-weight:800;flex:1}
+.pill-count{font-size:.72rem;color:var(--text2);background:var(--card);border:1px solid var(--border);padding:3px 9px;border-radius:99px}
+.home-top{padding:16px 16px 0}
+.good-morning{font-size:.78rem;color:var(--text2);font-weight:500;margin-bottom:1px}
+.home-heading{font-family:'Nunito',sans-serif;font-size:1.35rem;font-weight:900;margin-bottom:14px}
+.home-heading span{color:var(--accent)}
+.search-wrap{display:flex;align-items:center;gap:9px;background:var(--card);border:1.5px solid var(--border);border-radius:var(--r);padding:10px 13px;margin-bottom:16px;transition:border-color .2s}
+.search-wrap:focus-within{border-color:var(--accent)}
+.search-wrap input{flex:1;background:none;border:none;outline:none;color:var(--text);font-family:'Outfit',sans-serif;font-size:.88rem}
+.search-wrap input::placeholder{color:var(--text3)}
+.banner{margin:0 16px 16px;background:linear-gradient(135deg,#1a1020,#0f1a2a);border:1px solid var(--border);border-radius:var(--r);padding:16px;position:relative;overflow:hidden}
+.banner::before{content:'🎯';position:absolute;right:-6px;top:-6px;font-size:4.5rem;opacity:.1}
+.banner-tag{font-size:.68rem;font-weight:800;color:var(--accent);text-transform:uppercase;letter-spacing:.08em;margin-bottom:5px}
+.banner-title{font-family:'Nunito',sans-serif;font-size:1rem;font-weight:800;margin-bottom:3px}
+.banner-sub{font-size:.76rem;color:var(--text2);margin-bottom:12px}
+.banner-cta{display:inline-flex;align-items:center;gap:5px;background:var(--accent);color:#fff;padding:7px 14px;border-radius:99px;font-size:.76rem;font-weight:700;cursor:pointer;border:none;font-family:'Outfit',sans-serif;box-shadow:0 4px 14px var(--accent-glow);transition:transform .15s}
+.banner-cta:active{transform:scale(.95)}
+.stats-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;padding:0 16px 16px}
+.sc{background:var(--card);border:1px solid var(--border);border-radius:var(--r-sm);padding:10px 6px;text-align:center;cursor:pointer;transition:background .15s}
+.sc:active{background:var(--card2)}
+.sc-n{font-family:'Nunito',sans-serif;font-size:1rem;font-weight:900;color:var(--accent)}
+.sc-l{font-size:.55rem;color:var(--text3);margin-top:2px;text-transform:uppercase;letter-spacing:.04em}
+.sec-row{display:flex;align-items:center;justify-content:space-between;padding:0 16px;margin-bottom:10px}
+.sec-title{font-family:'Nunito',sans-serif;font-size:.95rem;font-weight:800}
+.sec-link{font-size:.75rem;color:var(--accent);font-weight:700;cursor:pointer}
+.hscroll{display:flex;gap:8px;padding:0 16px 14px;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.hscroll::-webkit-scrollbar{display:none}
+.hchip{flex-shrink:0;display:flex;align-items:center;gap:5px;padding:7px 12px;border-radius:99px;background:var(--card);border:1.5px solid var(--border);font-size:.76rem;font-weight:700;color:var(--text2);cursor:pointer;white-space:nowrap;transition:all .15s}
+.hchip:active{transform:scale(.95)}
+.hchip.active{background:var(--accent);border-color:var(--accent);color:#fff;box-shadow:0 3px 12px var(--accent-glow)}
+.hchip.blue.active{background:var(--blue);border-color:var(--blue)}
+.course-list{padding:0 16px;display:flex;flex-direction:column;gap:10px}
+.ccard{background:var(--card);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;transition:background .15s;animation:slideUp .3s ease both}
+.ccard:active{background:var(--card2)}
+@keyframes slideUp{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:none}}
+.ccard-bar{height:3px}
+.ccard-inner{padding:13px}
+.ccard-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:8px}
+.trade-tag{display:flex;align-items:center;gap:4px;padding:3px 9px;border-radius:99px;font-size:.68rem;font-weight:700;border:1px solid}
+.jp{font-size:.65rem;font-weight:700;padding:3px 8px;border-radius:99px}
+.jp.g{background:rgba(34,201,138,.14);color:var(--green);border:1px solid rgba(34,201,138,.28)}
+.jp.l{background:rgba(246,195,71,.11);color:var(--yellow);border:1px solid rgba(246,195,71,.25)}
+.jp.p{background:rgba(79,142,247,.11);color:var(--blue);border:1px solid rgba(79,142,247,.25)}
+.ccard-title{font-family:'Nunito',sans-serif;font-size:.95rem;font-weight:800;margin-bottom:4px;line-height:1.25}
+.ccard-loc{font-size:.74rem;color:var(--text2);margin-bottom:9px}
+.meta-row{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px}
+.mpill{font-size:.67rem;padding:3px 8px;border-radius:99px;background:var(--card2);color:var(--text2);border:1px solid var(--border)}
+.mpill.free{color:var(--green);background:rgba(34,201,138,.07);border-color:rgba(34,201,138,.22)}
+.seats-info{display:flex;justify-content:space-between;margin-bottom:5px}
+.si-txt{font-size:.67rem;color:var(--text3)}
+.si-left{font-size:.67rem;font-weight:700}
+.track{height:3px;background:var(--border);border-radius:99px;overflow:hidden;margin-bottom:10px}
+.track-f{height:100%;border-radius:99px}
+.card-btns{display:flex;gap:7px}
+.cbtn{flex:1;padding:9px 10px;border-radius:var(--r-sm);font-family:'Outfit',sans-serif;font-size:.76rem;font-weight:700;cursor:pointer;border:1.5px solid;text-align:center;transition:all .15s}
+.cbtn:active{transform:scale(.96)}
+.cbtn-p{background:var(--accent);border-color:var(--accent);color:#fff;box-shadow:0 3px 10px var(--accent-glow)}
+.cbtn-o{background:transparent;border-color:var(--border2);color:var(--text2)}
+.ping-btn{width:38px;height:38px;border-radius:var(--r-sm);background:var(--card2);border:1.5px solid var(--border2);display:grid;place-items:center;cursor:pointer;font-size:.9rem;flex-shrink:0;transition:all .15s}
+.ping-btn:active{transform:scale(.92)}
+.ping-btn.on{border-color:var(--accent);background:rgba(255,107,43,.1)}
+.filter-scroll{display:flex;gap:7px;padding:10px 16px;overflow-x:auto;border-bottom:1px solid var(--border)}
+.filter-scroll::-webkit-scrollbar{display:none}
+.fchip{flex-shrink:0;padding:5px 11px;border-radius:99px;font-size:.72rem;font-weight:700;cursor:pointer;border:1.5px solid var(--border);background:var(--card);color:var(--text2);transition:all .15s;white-space:nowrap}
+.fchip.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.fchip:active{transform:scale(.94)}
+.filter-row{display:flex;gap:7px;padding:8px 16px;border-bottom:1px solid var(--border);overflow-x:auto}
+.filter-row::-webkit-scrollbar{display:none}
+.fsel{background:var(--card);border:1px solid var(--border);color:var(--text);padding:6px 10px;border-radius:var(--r-sm);font-family:'Outfit',sans-serif;font-size:.74rem;outline:none;flex-shrink:0}
+.fsel option{background:var(--card)}
+.state-filter-wrap{padding:10px 16px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center}
+.state-search{flex:1;background:var(--card);border:1.5px solid var(--border);color:var(--text);padding:9px 12px;border-radius:var(--r-sm);font-family:'Outfit',sans-serif;font-size:.82rem;outline:none;transition:border-color .2s}
+.state-search:focus{border-color:var(--accent)}
+.type-fsel{background:var(--card);border:1.5px solid var(--border);color:var(--text);padding:9px 10px;border-radius:var(--r-sm);font-family:'Outfit',sans-serif;font-size:.74rem;outline:none}
+.type-fsel option{background:var(--card)}
+.state-chips{display:flex;gap:7px;padding:10px 16px;overflow-x:auto;border-bottom:1px solid var(--border)}
+.state-chips::-webkit-scrollbar{display:none}
+.center-cards{padding:12px 16px;display:flex;flex-direction:column;gap:9px}
+.cen-card{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:13px;display:flex;align-items:flex-start;gap:10px;cursor:pointer;transition:background .15s}
+.cen-card:active{background:var(--card2)}
+.cen-ico{width:40px;height:40px;border-radius:11px;display:grid;place-items:center;font-size:1.05rem;flex-shrink:0}
+.cen-name{font-family:'Nunito',sans-serif;font-weight:800;font-size:.88rem;margin-bottom:2px;line-height:1.25}
+.cen-loc{font-size:.72rem;color:var(--text2);margin-bottom:6px;line-height:1.4}
+.cen-type-badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:99px;font-size:.62rem;font-weight:700;margin-bottom:6px}
+.cen-trades{display:flex;flex-wrap:wrap;gap:4px}
+.ct-pill{font-size:.62rem;padding:2px 7px;border-radius:99px;background:var(--card2);border:1px solid var(--border2);color:var(--text3)}
+.no-results{text-align:center;padding:48px 20px;color:var(--text3)}
+.no-results .nr-ico{font-size:2.5rem;margin-bottom:10px}
+.no-results .nr-t{font-family:'Nunito',sans-serif;font-weight:800;color:var(--text2);font-size:.95rem;margin-bottom:4px}
+.no-results .nr-s{font-size:.8rem}
+.story-list{padding:12px 16px;display:flex;flex-direction:column;gap:10px}
+.scard{background:var(--card);border:1px solid var(--border);border-radius:var(--r);overflow:hidden;cursor:pointer;transition:background .15s}
+.scard:active{background:var(--card2)}
+.scard-top{display:flex;align-items:center;gap:12px;padding:14px}
+.scard-emo{width:52px;height:52px;border-radius:14px;background:var(--card2);display:grid;place-items:center;font-size:2.1rem;flex-shrink:0}
+.scard-name{font-family:'Nunito',sans-serif;font-weight:800;font-size:.95rem;margin-bottom:2px}
+.scard-trade{font-size:.72rem;color:var(--accent);font-weight:600;margin-bottom:2px}
+.scard-job{font-size:.75rem;color:var(--text2)}
+.scard-sal{font-size:.78rem;color:var(--green);font-weight:700;margin-top:2px}
+.scard-quote{margin:0 14px 13px;padding:10px 12px;background:var(--card2);border-radius:var(--r-sm);border-left:3px solid var(--accent);font-size:.76rem;color:var(--text2);font-style:italic;line-height:1.5}
+.profile-top{padding:18px 16px;display:flex;align-items:center;gap:12px;border-bottom:1px solid var(--border);background:linear-gradient(160deg,var(--card),var(--bg2))}
+.avatar{width:54px;height:54px;border-radius:16px;background:linear-gradient(135deg,var(--accent),var(--blue));display:grid;place-items:center;font-size:1.5rem;font-weight:900;font-family:'Nunito',sans-serif;flex-shrink:0;color:#fff}
+.profile-name{font-family:'Nunito',sans-serif;font-size:1.05rem;font-weight:900;margin-bottom:2px}
+.profile-sub{font-size:.74rem;color:var(--text2)}
+.edit-pill{margin-left:auto;background:var(--card2);border:1px solid var(--border2);color:var(--text2);padding:5px 11px;border-radius:99px;font-size:.72rem;font-weight:700;cursor:pointer;font-family:'Outfit',sans-serif}
+.divider{height:7px;background:var(--bg);border-top:1px solid var(--border);border-bottom:1px solid var(--border)}
+.quick-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:12px 16px}
+.qcard{background:var(--card);border:1px solid var(--border);border-radius:var(--r-sm);padding:13px;cursor:pointer;text-align:center;transition:background .15s}
+.qcard:active{background:var(--card2)}
+.qcard-ico{font-size:1.4rem;margin-bottom:5px}
+.qcard-label{font-size:.78rem;font-weight:700}
+.qcard-sub{font-size:.65rem;color:var(--text3);margin-top:2px}
+.app-list{padding:10px 16px;display:flex;flex-direction:column;gap:8px}
+.acard{background:var(--card);border:1px solid var(--border);border-radius:var(--r-sm);padding:12px;transition:background .15s;cursor:pointer}
+.acard:active{background:var(--card2)}
+.ac-course{font-family:'Nunito',sans-serif;font-weight:800;font-size:.88rem;margin-bottom:3px}
+.ac-meta{font-size:.72rem;color:var(--text2);line-height:1.6;margin-bottom:7px}
+.ac-footer{display:flex;align-items:center;justify-content:space-between}
+.ac-status{font-size:.68rem;font-weight:700;padding:3px 9px;border-radius:99px;background:rgba(34,201,138,.11);color:var(--green);border:1px solid rgba(34,201,138,.28)}
+.ac-view{font-size:.7rem;color:var(--accent);font-weight:700;cursor:pointer}
+.empty-state{padding:40px 20px;text-align:center;color:var(--text3)}
+.es-ico{font-size:2.5rem;margin-bottom:10px}
+.es-t{font-family:'Nunito',sans-serif;font-weight:800;color:var(--text2);margin-bottom:5px}
+.es-s{font-size:.8rem}
+.sheet-overlay{position:fixed;inset:0;z-index:800;background:rgba(0,0,0,.65);backdrop-filter:blur(6px);opacity:0;pointer-events:none;transition:opacity .22s;display:flex;align-items:flex-end}
+.sheet-overlay.open{opacity:1;pointer-events:all}
+.sheet{width:100%;background:var(--card);border-radius:22px 22px 0 0;border-top:1px solid var(--border2);max-height:92vh;overflow-y:auto;transform:translateY(100%);transition:transform .3s cubic-bezier(.25,.46,.45,.94)}
+.sheet::-webkit-scrollbar{display:none}
+.sheet-overlay.open .sheet{transform:none}
+.sheet-handle{width:34px;height:4px;background:var(--border2);border-radius:99px;margin:11px auto 0}
+.sheet-hdr{padding:14px 18px 0;display:flex;align-items:center;justify-content:space-between}
+.sheet-title{font-family:'Nunito',sans-serif;font-size:1.05rem;font-weight:800}
+.sheet-close{width:30px;height:30px;border-radius:50%;background:var(--card2);border:1px solid var(--border);display:grid;place-items:center;cursor:pointer;font-size:.85rem}
+.sheet-body{padding:14px 18px 28px}
+.sbtn-row{display:flex;gap:9px;padding:0 18px 30px}
+.sbtn{flex:1;padding:12px;border-radius:var(--r-sm);font-family:'Outfit',sans-serif;font-size:.85rem;font-weight:700;cursor:pointer;border:1.5px solid;text-align:center;transition:all .15s}
+.sbtn:active{transform:scale(.97)}
+.sbtn-p{background:var(--accent);border-color:var(--accent);color:#fff;box-shadow:0 5px 18px var(--accent-glow)}
+.sbtn-o{background:transparent;border-color:var(--border2);color:var(--text2)}
+.fg{margin-bottom:13px}
+.fl{display:block;font-size:.69rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:var(--text3);margin-bottom:6px}
+.fi,.fs,.ft{width:100%;background:var(--card2);border:1.5px solid var(--border);color:var(--text);padding:10px 13px;border-radius:var(--r-sm);font-family:'Outfit',sans-serif;font-size:.87rem;outline:none;transition:border-color .2s}
+.fi:focus,.fs:focus,.ft:focus{border-color:var(--accent)}
+.fs option,.ft option{background:var(--card2)}
+.ft{resize:vertical;min-height:70px}
+.f2{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.cib{background:var(--card2);border:1px solid var(--border);border-radius:var(--r-sm);padding:12px;margin-bottom:14px}
+.cib-t{font-family:'Nunito',sans-serif;font-weight:800;font-size:.9rem;margin-bottom:3px}
+.cib-m{font-size:.72rem;color:var(--text2);line-height:1.6}
+.sum-box{background:var(--card2);border:1px solid var(--border);border-radius:var(--r-sm);padding:14px;margin-bottom:12px}
+.sum-lbl{font-size:.66rem;font-weight:800;text-transform:uppercase;letter-spacing:.08em;color:var(--accent);margin-bottom:10px}
+.sum-r{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--border);font-size:.78rem}
+.sum-r:last-child{border-bottom:none}
+.sum-k{color:var(--text3);flex:1}
+.sum-val{font-weight:600;flex:1.3;text-align:right}
+.notif-list{display:flex;flex-direction:column}
+.ni{display:flex;gap:10px;padding:12px 0;border-bottom:1px solid var(--border);align-items:flex-start}
+.ni:last-child{border-bottom:none}
+.ni-ico{width:34px;height:34px;border-radius:10px;background:var(--card2);display:grid;place-items:center;font-size:.95rem;flex-shrink:0}
+.ni-text{font-size:.78rem;color:var(--text2);line-height:1.5;margin-bottom:2px}
+.ni-time{font-size:.65rem;color:var(--text3)}
+.toast-wrap{position:fixed;bottom:78px;left:50%;transform:translateX(-50%);z-index:1000;display:flex;flex-direction:column;gap:6px;align-items:center;pointer-events:none}
+.toast{background:rgba(17,24,39,.97);border:1px solid var(--border2);border-radius:99px;padding:9px 16px;font-size:.8rem;font-weight:500;white-space:nowrap;box-shadow:0 6px 28px rgba(0,0,0,.5);display:flex;align-items:center;gap:7px;animation:tPop .28s cubic-bezier(.34,1.56,.64,1)}
+.toast.s{border-color:rgba(34,201,138,.4);color:var(--green)}
+.toast.e{border-color:rgba(240,82,82,.4);color:var(--red)}
+.toast.i{border-color:rgba(79,142,247,.4);color:var(--blue)}
+@keyframes tPop{from{opacity:0;transform:translateY(10px) scale(.9)}to{opacity:1;transform:none}}
+
+/* ── LOGIN SYSTEM ── */
+#loginWall{position:fixed;inset:0;z-index:5000;background:var(--bg);display:flex;flex-direction:column;overflow-y:auto}
+#loginWall.hide{display:none}
+.lw-top{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:40px 28px 20px}
+.lw-logo{width:72px;height:72px;background:linear-gradient(135deg,var(--accent),#ff9860);border-radius:22px;display:grid;place-items:center;font-size:2.2rem;box-shadow:0 0 40px var(--accent-glow);margin-bottom:14px}
+.lw-title{font-family:'Nunito',sans-serif;font-size:1.6rem;font-weight:900;margin-bottom:4px;text-align:center}
+.lw-title span{color:var(--accent)}
+.lw-sub{font-size:.82rem;color:var(--text2);text-align:center;margin-bottom:28px}
+.role-tabs{display:flex;background:var(--card);border:1px solid var(--border);border-radius:var(--r-sm);padding:4px;gap:4px;width:100%;margin-bottom:20px}
+.role-tab{flex:1;padding:9px;border-radius:8px;text-align:center;font-size:.8rem;font-weight:700;cursor:pointer;color:var(--text2);transition:all .2s}
+.role-tab.active{background:var(--accent);color:#fff;box-shadow:0 3px 10px var(--accent-glow)}
+.auth-tabs{display:flex;gap:0;margin-bottom:20px;border-bottom:2px solid var(--border);width:100%}
+.auth-tab{flex:1;padding:10px;text-align:center;font-size:.82rem;font-weight:700;cursor:pointer;color:var(--text3);border-bottom:2px solid transparent;margin-bottom:-2px;transition:all .2s}
+.auth-tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.auth-form{width:100%;display:flex;flex-direction:column;gap:12px}
+.auth-form.hide{display:none}
+.lw-input{width:100%;background:var(--card);border:1.5px solid var(--border);color:var(--text);padding:12px 14px;border-radius:var(--r-sm);font-family:'Outfit',sans-serif;font-size:.88rem;outline:none;transition:border-color .2s}
+.lw-input:focus{border-color:var(--accent)}
+.lw-input::placeholder{color:var(--text3)}
+.lw-btn{width:100%;padding:13px;border-radius:var(--r-sm);font-family:'Outfit',sans-serif;font-size:.88rem;font-weight:700;cursor:pointer;border:none;background:var(--accent);color:#fff;box-shadow:0 5px 18px var(--accent-glow);transition:transform .15s;margin-top:4px}
+.lw-btn:active{transform:scale(.97)}
+.lw-btn.sec{background:var(--card);border:1.5px solid var(--border);color:var(--text2);box-shadow:none}
+.otp-row{display:flex;gap:8px}
+.otp-box{flex:1;text-align:center;font-size:1.2rem;font-weight:700;letter-spacing:.1em;padding:12px 6px;background:var(--card);border:1.5px solid var(--border);border-radius:var(--r-sm);color:var(--text);outline:none;font-family:'Nunito',sans-serif}
+.otp-box:focus{border-color:var(--accent)}
+.divider-or{display:flex;align-items:center;gap:10px;color:var(--text3);font-size:.75rem;font-weight:600;margin:4px 0}
+.divider-or::before,.divider-or::after{content:'';flex:1;height:1px;background:var(--border)}
+.lw-bottom{padding:16px 28px 32px;text-align:center}
+.lw-skip{font-size:.78rem;color:var(--text3);cursor:pointer}
+.lw-skip span{color:var(--accent);font-weight:700}
+.lw-step{display:none}
+.lw-step.active{display:flex;flex-direction:column;align-items:center;width:100%}
+.back-btn{align-self:flex-start;display:flex;align-items:center;gap:5px;font-size:.78rem;color:var(--text2);cursor:pointer;margin-bottom:16px;font-weight:600}
+.center-badge{background:rgba(79,142,247,.12);border:1px solid rgba(79,142,247,.3);color:var(--blue);padding:5px 12px;border-radius:99px;font-size:.72rem;font-weight:700;margin-bottom:12px}
+.user-badge{background:rgba(255,107,43,.12);border:1px solid rgba(255,107,43,.3);color:var(--accent);padding:5px 12px;border-radius:99px;font-size:.72rem;font-weight:700;margin-bottom:12px}
+.pw-wrap{position:relative;width:100%}
+.pw-toggle{position:absolute;right:13px;top:50%;transform:translateY(-50%);cursor:pointer;font-size:.85rem;color:var(--text3)}
+#centerDash{position:fixed;inset:0;z-index:4000;background:var(--bg);display:flex;flex-direction:column;overflow-y:auto}
+#centerDash.hide{display:none}
+.cd-header{background:rgba(6,10,20,.95);border-bottom:1px solid var(--border);padding:14px 18px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:10}
+.cd-title{font-family:'Nunito',sans-serif;font-weight:900;font-size:1rem}
+.cd-logout{font-size:.75rem;color:var(--accent);font-weight:700;cursor:pointer}
+.cd-body{padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.cd-stat-row{display:grid;grid-template-columns:repeat(3,1fr);gap:8px}
+.cd-stat{background:var(--card);border:1px solid var(--border);border-radius:var(--r-sm);padding:12px 8px;text-align:center}
+.cd-stat-n{font-family:'Nunito',sans-serif;font-size:1.2rem;font-weight:900;color:var(--accent)}
+.cd-stat-l{font-size:.6rem;color:var(--text3);text-transform:uppercase;margin-top:2px}
+.cd-section{font-family:'Nunito',sans-serif;font-weight:800;font-size:.9rem;margin:8px 0 4px}
+.cd-app-card{background:var(--card);border:1px solid var(--border);border-radius:var(--r-sm);padding:12px}
+.cd-app-name{font-family:'Nunito',sans-serif;font-weight:800;font-size:.88rem;margin-bottom:3px}
+.cd-app-meta{font-size:.72rem;color:var(--text2);line-height:1.6;margin-bottom:7px}
+.cd-app-footer{display:flex;gap:7px}
+.cd-btn{flex:1;padding:7px;border-radius:8px;font-size:.72rem;font-weight:700;cursor:pointer;border:1.5px solid;text-align:center;font-family:'Outfit',sans-serif;transition:all .15s}
+.cd-btn:active{transform:scale(.96)}
+.cd-btn-g{background:rgba(34,201,138,.1);border-color:rgba(34,201,138,.3);color:var(--green)}
+.cd-btn-r{background:rgba(240,82,82,.1);border-color:rgba(240,82,82,.3);color:var(--red)}
+.cd-btn-b{background:rgba(79,142,247,.1);border-color:rgba(79,142,247,.3);color:var(--blue)}
+.cd-empty{text-align:center;padding:32px 16px;color:var(--text3);font-size:.82rem}
+.cd-seats-row{display:flex;align-items:center;gap:8px;background:var(--card2);border-radius:var(--r-sm);padding:10px 12px;border:1px solid var(--border)}
+.cd-seats-label{flex:1;font-size:.78rem;color:var(--text2)}
+.cd-seats-input{width:60px;background:var(--card);border:1.5px solid var(--border);color:var(--text);padding:6px 8px;border-radius:8px;font-family:'Nunito',sans-serif;font-size:.9rem;font-weight:700;text-align:center;outline:none}
+.cd-seats-input:focus{border-color:var(--accent)}
+.cd-update-btn{padding:7px 14px;background:var(--accent);border:none;border-radius:8px;color:#fff;font-size:.72rem;font-weight:700;cursor:pointer;font-family:'Outfit',sans-serif}
+</style>
+</head>
+<body>
+<div id="splash">
+  <div class="sp-icon">🎯</div>
+  <div class="sp-name">Namma<span>-Skill</span></div>
+  <div class="sp-sub">India's Skill Opportunity Tracker</div>
+  <div class="sp-bar"><div class="sp-fill"></div></div>
+</div>
+<div class="status-bar">
+  <span id="clock">9:41</span>
+  <div class="status-right">
+    <div class="sig"><span></span><span></span><span></span><span></span></div>
+    <span class="fourG">4G</span>
+    <div class="bat"><div class="bat-f"></div></div>
+  </div>
+</div>
+<div class="app-header">
+  <div class="h-logo">
+    <div class="h-logo-icon">🎯</div>
+    <div class="h-logo-name">Namma<span>-Skill</span></div>
+  </div>
+  <div class="h-actions">
+    <div class="icon-btn" onclick="openSheet('notifSheet')">🔔<div class="badge" id="notifBadge">3</div></div>
+    <div class="icon-btn" onclick="openSheet('registerSheet')">👤</div>
+  </div>
+</div>
+<div class="scroll-area" id="scrollArea">
+  <!-- HOME -->
+  <div class="screen active" id="screen-home">
+    <div class="home-top">
+      <div class="good-morning">Good morning 👋</div>
+      <div class="home-heading">Find Your <span>Dream Skill</span></div>
+      <div class="search-wrap">
+        <span style="color:var(--text3)">🔍</span>
+        <input type="text" id="homeSearch" placeholder="Search courses, trades, centers…" oninput="homeSearchFilter()">
+      </div>
+    </div>
+    <div class="banner">
+      <div class="banner-tag">🆕 New Batch – Jun 2025</div>
+      <div class="banner-title">Full Stack Web Development</div>
+      <div class="banner-sub">Bengaluru NSDC Hub · FREE · 6 Months · Job Guaranteed</div>
+      <button class="banner-cta" onclick="openApplySheet(5)">Apply Now →</button>
+    </div>
+    <div class="stats-grid">
+      <div class="sc"><div class="sc-n">12</div><div class="sc-l">Courses</div></div>
+      <div class="sc"><div class="sc-n" id="totalCenters">100+</div><div class="sc-l">Centers</div></div>
+      <div class="sc"><div class="sc-n">36</div><div class="sc-l">States/UTs</div></div>
+      <div class="sc"><div class="sc-n">92%</div><div class="sc-l">Placed</div></div>
+    </div>
+    <div class="sec-row"><div class="sec-title">Browse by Trade</div></div>
+    <div class="hscroll" id="homeTradeChips"></div>
+    <div class="sec-row">
+      <div class="sec-title">Upcoming Batches</div>
+      <div class="sec-link" onclick="switchScreen('courses')">See all →</div>
+    </div>
+    <div class="course-list" id="homeCourseList"></div>
+    <div style="height:14px"></div>
+  </div>
+
+  <!-- COURSES -->
+  <div class="screen" id="screen-courses">
+    <div class="screen-hdr">
+      <div class="screen-hdr-title">All Courses</div>
+      <div class="pill-count" id="coursesCount">12</div>
+    </div>
+    <div class="filter-scroll" id="coursesTradeChips"></div>
+    <div class="filter-row">
+      <select class="fsel" id="durFilter" onchange="renderAllCourses()">
+        <option value="">Duration</option>
+        <option value="short">≤3 Months</option>
+        <option value="long">>3 Months</option>
+      </select>
+      <select class="fsel" id="stateFilter" onchange="onStateFilterChange()">
+        <option value="">All States</option>
+      </select>
+      <select class="fsel" id="distFilter" onchange="renderAllCourses()">
+        <option value="">All Districts</option>
+      </select>
+      <select class="fsel" id="jobFilter" onchange="renderAllCourses()">
+        <option value="">Job Status</option>
+        <option value="guaranteed">Guaranteed</option>
+        <option value="likely">Likely</option>
+        <option value="possible">Possible</option>
+      </select>
+    </div>
+    <div class="course-list" id="allCourseList" style="padding-top:12px"></div>
+    <div style="height:14px"></div>
+  </div>
+
+  <!-- CENTERS -->
+  <div class="screen" id="screen-centers">
+    <div class="screen-hdr">
+      <div class="screen-hdr-title">Skill Centers</div>
+      <div class="pill-count" id="centersCount">100+</div>
+    </div>
+    <div class="state-filter-wrap">
+      <input class="state-search" id="centerSearch" placeholder="🔍  Search by name, city, state…" oninput="renderCenters()">
+      <select class="type-fsel" id="centerTypeFilter" onchange="renderCenters()">
+        <option value="">All Types</option>
+        <option>Govt ITI</option><option>NSDC</option><option>PMKVY / PMKK</option>
+        <option>NSTI</option><option>Skill India Hub</option><option>JSS</option>
+      </select>
+    </div>
+    <div class="state-chips hscroll" id="stateChips" style="padding-bottom:10px"></div>
+    <div class="center-cards" id="centerCards"></div>
+    <div style="height:14px"></div>
+  </div>
+
+  <!-- STORIES -->
+  <div class="screen" id="screen-stories">
+    <div class="screen-hdr"><div class="screen-hdr-title">Success Stories</div><div class="pill-count">8</div></div>
+    <div class="story-list" id="storyList"></div>
+    <div style="height:14px"></div>
+  </div>
+
+  <!-- PROFILE -->
+  <div class="screen" id="screen-profile">
+    <div class="profile-top">
+      <div class="avatar" id="profileAvatar">?</div>
+      <div>
+        <div class="profile-name" id="profileName">Guest User</div>
+        <div class="profile-sub" id="profileSub">Register to get batch alerts</div>
+      </div>
+      <div style="display:flex;gap:6px;margin-left:auto"><div class="edit-pill" onclick="openSheet('registerSheet')">Edit</div><div class="edit-pill" style="color:var(--red);border-color:rgba(240,82,82,.3)" onclick="studentLogout()">Logout</div></div>
+    </div>
+    <div class="divider"></div>
+    <div class="quick-grid">
+      <div class="qcard" onclick="openApplySheet(null)"><div class="qcard-ico">📝</div><div class="qcard-label">Apply Now</div><div class="qcard-sub">For any course</div></div>
+      <div class="qcard" onclick="switchScreen('courses')"><div class="qcard-ico">🔍</div><div class="qcard-label">Browse Courses</div><div class="qcard-sub">Find your skill</div></div>
+      <div class="qcard" onclick="switchScreen('centers')"><div class="qcard-ico">🗺️</div><div class="qcard-label">Skill Centers</div><div class="qcard-sub">All India</div></div>
+      <div class="qcard" onclick="openSheet('notifSheet')"><div class="qcard-ico">🔔</div><div class="qcard-label">Notifications</div><div class="qcard-sub">Stay updated</div></div>
+    </div>
+    <div class="divider"></div>
+    <div class="sec-row" style="padding-top:10px"><div class="sec-title">My Applications</div><div class="pill-count" id="appsCount">0</div></div>
+    <div class="app-list" id="profileAppList"></div>
+    <div style="height:14px"></div>
+  </div>
+</div>
+
+<div class="bottom-nav">
+  <div class="nav-item active" id="nav-home" onclick="switchScreen('home')"><div class="nav-bar"></div><div class="nav-icon">🏠</div><div class="nav-label">Home</div></div>
+  <div class="nav-item" id="nav-courses" onclick="switchScreen('courses')"><div class="nav-bar"></div><div class="nav-icon">📚</div><div class="nav-label">Courses</div></div>
+  <div class="nav-item" id="nav-centers" onclick="switchScreen('centers')"><div class="nav-bar"></div><div class="nav-icon">🗺️</div><div class="nav-label">Centers</div></div>
+  <div class="nav-item" id="nav-stories" onclick="switchScreen('stories')"><div class="nav-bar"></div><div class="nav-icon">⭐</div><div class="nav-label">Stories</div></div>
+  <div class="nav-item" id="nav-profile" onclick="switchScreen('profile')"><div class="nav-bar"></div><div class="nav-icon">👤</div><div class="nav-label">Profile</div></div>
+</div>
+
+<!-- ══════════ LOGIN WALL ══════════ -->
+<div id="loginWall">
+  <div class="lw-top">
+    <div class="lw-logo">🎯</div>
+    <div class="lw-title">Namma<span>-Skill</span></div>
+    <div class="lw-sub">India's Skill Opportunity Tracker</div>
+
+    <!-- Role selector -->
+    <div class="role-tabs">
+      <div class="role-tab active" id="roleStudent" onclick="setRole('student')">🎓 Student</div>
+      <div class="role-tab" id="roleCenter" onclick="setRole('center')">🏭 Skill Center</div>
+    </div>
+
+    <!-- Auth method tabs -->
+    <div class="auth-tabs">
+      <div class="auth-tab active" id="tabPhone" onclick="setAuthTab('phone')">📱 Phone / OTP</div>
+      <div class="auth-tab" id="tabEmail" onclick="setAuthTab('email')">✉️ Email</div>
+    </div>
+
+    <!-- STEP 1: Phone entry -->
+    <div class="lw-step active" id="stepPhone">
+      <div class="auth-form" id="formPhone">
+        <input class="lw-input" id="lwPhone" type="tel" placeholder="📱 Enter 10-digit mobile number" maxlength="10" inputmode="numeric">
+        <input class="lw-input" id="lwPhoneName" type="text" placeholder="👤 Full Name">
+        <button class="lw-btn" onclick="sendOTP()">Send OTP →</button>
+      </div>
+    </div>
+
+    <!-- STEP 2: OTP verify -->
+    <div class="lw-step" id="stepOTP">
+      <div class="back-btn" onclick="goBackToPhone()">← Back</div>
+      <div id="otpRoleBadge" class="user-badge">Student Login</div>
+      <p style="font-size:.78rem;color:var(--text2);margin-bottom:14px;text-align:center">OTP sent to <strong id="otpPhoneDisplay"></strong><br><span style="font-size:.68rem;color:var(--accent)">Demo OTP: 1 2 3 4</span></p>
+      <div class="otp-row">
+        <input class="otp-box" id="o1" maxlength="1" inputmode="numeric" oninput="otpNext(this,'o2')">
+        <input class="otp-box" id="o2" maxlength="1" inputmode="numeric" oninput="otpNext(this,'o3')">
+        <input class="otp-box" id="o3" maxlength="1" inputmode="numeric" oninput="otpNext(this,'o4')">
+        <input class="otp-box" id="o4" maxlength="1" inputmode="numeric" oninput="otpNext(this,null)">
+      </div>
+      <button class="lw-btn" style="margin-top:16px" onclick="verifyOTP()">Verify & Login ✓</button>
+      <div style="font-size:.72rem;color:var(--text3);margin-top:10px;cursor:pointer" onclick="sendOTP()">Resend OTP</div>
+    </div>
+
+    <!-- Email login form -->
+    <div class="lw-step" id="stepEmail">
+      <div id="emailRoleBadge" class="user-badge">Student Login</div>
+      <div class="auth-form" id="formEmail">
+        <input class="lw-input" id="lwEmailName" type="text" placeholder="👤 Full Name" id="lwEmailName">
+        <input class="lw-input" id="lwEmail" type="email" placeholder="✉️ Email address">
+        <div class="pw-wrap">
+          <input class="lw-input" id="lwPw" type="password" placeholder="🔒 Password (min 6 chars)">
+          <span class="pw-toggle" onclick="togglePw()">👁</span>
+        </div>
+        <div class="auth-tabs" style="margin-bottom:4px">
+          <div class="auth-tab active" id="emailTabLogin" onclick="setEmailMode('login')" style="font-size:.74rem">Login</div>
+          <div class="auth-tab" id="emailTabSignup" onclick="setEmailMode('signup')" style="font-size:.74rem">Sign Up</div>
+        </div>
+        <button class="lw-btn" id="emailActionBtn" onclick="emailAuth()">Login →</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="lw-bottom">
+    <div class="lw-skip" onclick="skipLogin()">Skip for now · <span>Browse as Guest</span></div>
+  </div>
+</div>
+
+<!-- ══════════ CENTER DASHBOARD ══════════ -->
+<div id="centerDash" class="hide">
+  <div class="cd-header">
+    <div>
+      <div class="cd-title" id="cdCenterName">Skill Center Dashboard</div>
+      <div style="font-size:.65rem;color:var(--text2)" id="cdCenterEmail"></div>
+    </div>
+    <div class="cd-logout" onclick="centerLogout()">Logout →</div>
+  </div>
+  <div class="cd-body">
+    <div class="cd-stat-row">
+      <div class="cd-stat"><div class="cd-stat-n" id="cdTotalApps">0</div><div class="cd-stat-l">Applications</div></div>
+      <div class="cd-stat"><div class="cd-stat-n" id="cdPending">0</div><div class="cd-stat-l">Pending</div></div>
+      <div class="cd-stat"><div class="cd-stat-n" id="cdApproved">0</div><div class="cd-stat-l">Approved</div></div>
+    </div>
+
+    <!-- Seat management -->
+    <div class="cd-section">🪑 Manage Seats</div>
+    <div id="cdSeatsList"></div>
+
+    <!-- Applications -->
+    <div class="cd-section">📋 Recent Applications</div>
+    <div id="cdAppsList"></div>
+  </div>
+</div>
+
+<div class="toast-wrap" id="toastWrap"></div>
+
+<!-- APPLY SHEET -->
+<div class="sheet-overlay" id="applySheet">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-hdr"><div class="sheet-title">Apply for Course</div><div class="sheet-close" onclick="closeSheet('applySheet')">✕</div></div>
+    <div class="sheet-body">
+      <div class="cib" id="applyInfoBox"></div>
+      <div class="f2">
+        <div class="fg"><label class="fl">Full Name *</label><input class="fi" id="appName" placeholder="Your name"></div>
+        <div class="fg"><label class="fl">Age</label><input class="fi" id="appAge" type="number" placeholder="18" min="14" max="45"></div>
+      </div>
+      <div class="f2">
+        <div class="fg"><label class="fl">Phone *</label><input class="fi" id="appPhone" placeholder="9XXXXXXXXX" maxlength="10"></div>
+        <div class="fg"><label class="fl">State</label>
+          <select class="fs" id="appState" onchange="updateAppDistricts()"><option value="">Select State</option></select>
+        </div>
+      </div>
+      <div class="fg"><label class="fl">District</label>
+        <select class="fs" id="appDistrict"><option value="">Select District</option></select>
+      </div>
+      <div class="fg"><label class="fl">Education</label>
+        <select class="fs" id="appEdu"><option>Below 10th</option><option>10th Pass (SSLC)</option><option>12th Pass (PUC)</option><option>Diploma</option><option>Graduate</option></select>
+      </div>
+      <div class="fg"><label class="fl">Why this course? (optional)</label><textarea class="ft fi" id="appReason" placeholder="Your motivation…"></textarea></div>
+    </div>
+    <div class="sbtn-row">
+      <button class="sbtn sbtn-o" onclick="closeSheet('applySheet')">Cancel</button>
+      <button class="sbtn sbtn-p" onclick="submitApplication()">Submit Application ✓</button>
+    </div>
+  </div>
+</div>
+
+<!-- NOTIF SHEET -->
+<div class="sheet-overlay" id="notifSheet">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-hdr">
+      <div class="sheet-title">Notifications</div>
+      <span style="font-size:.75rem;color:var(--accent);font-weight:700;cursor:pointer" onclick="clearNotifs()">Clear all</span>
+    </div>
+    <div class="sheet-body">
+      <div class="notif-list" id="notifList">
+        <div class="ni"><div class="ni-ico">🆕</div><div><div class="ni-text">New Welding batch starting June 10 at Mysuru ITI Center</div><div class="ni-time">2 hrs ago</div></div></div>
+        <div class="ni"><div class="ni-ico">✅</div><div><div class="ni-text">Your interest ping for Mobile Repair was received!</div><div class="ni-time">1 day ago</div></div></div>
+        <div class="ni"><div class="ni-ico">📢</div><div><div class="ni-text">Coding batch at Bengaluru NSDC has only 3 seats left</div><div class="ni-time">2 days ago</div></div></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- REGISTER SHEET -->
+<div class="sheet-overlay" id="registerSheet">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-hdr"><div class="sheet-title">Create Account</div><div class="sheet-close" onclick="closeSheet('registerSheet')">✕</div></div>
+    <div class="sheet-body">
+      <div class="f2">
+        <div class="fg"><label class="fl">Full Name *</label><input class="fi" id="regName" placeholder="Your name"></div>
+        <div class="fg"><label class="fl">Phone *</label><input class="fi" id="regPhone" placeholder="9XXXXXXXXX"></div>
+      </div>
+      <div class="fg"><label class="fl">State</label>
+        <select class="fs" id="regState"><option value="">Select State</option></select>
+      </div>
+      <div class="fg"><label class="fl">Interested Trades</label>
+        <div style="display:flex;flex-wrap:wrap;gap:7px;margin-top:7px" id="regTradeChips"></div>
+      </div>
+    </div>
+    <div class="sbtn-row">
+      <button class="sbtn sbtn-o" onclick="closeSheet('registerSheet')">Cancel</button>
+      <button class="sbtn sbtn-p" onclick="submitRegister()">Register & Get Alerts 🔔</button>
+    </div>
+  </div>
+</div>
+
+<!-- DETAIL SHEET -->
+<div class="sheet-overlay" id="detailSheet">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-hdr"><div class="sheet-title">Course Details</div><div class="sheet-close" onclick="closeSheet('detailSheet')">✕</div></div>
+    <div class="sheet-body" id="detailBody"></div>
+    <div class="sbtn-row" id="detailFooter"></div>
+  </div>
+</div>
+
+<!-- SUMMARY SHEET -->
+<div class="sheet-overlay" id="summarySheet">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-hdr"><div class="sheet-title">📄 Candidate Summary</div><div class="sheet-close" onclick="closeSheet('summarySheet')">✕</div></div>
+    <div class="sheet-body" id="summaryBody"></div>
+    <div class="sbtn-row">
+      <button class="sbtn sbtn-o" onclick="closeSheet('summarySheet')">Close</button>
+      <button class="sbtn sbtn-p" onclick="window.print()">🖨️ Print / PDF</button>
+    </div>
+  </div>
+</div>
+
+<!-- CENTER DETAIL SHEET -->
+<div class="sheet-overlay" id="cenDetailSheet">
+  <div class="sheet">
+    <div class="sheet-handle"></div>
+    <div class="sheet-hdr"><div class="sheet-title">Center Details</div><div class="sheet-close" onclick="closeSheet('cenDetailSheet')">✕</div></div>
+    <div class="sheet-body" id="cenDetailBody"></div>
+    <div class="sbtn-row">
+      <button class="sbtn sbtn-o" onclick="closeSheet('cenDetailSheet')">Close</button>
+      <button class="sbtn sbtn-p" onclick="closeSheet('cenDetailSheet');openApplySheet(null)">Apply for Course →</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ===================== ALL INDIA STATES & DISTRICTS =====================
+const INDIA_DISTRICTS = {
+  "Andhra Pradesh":["Alluri Sitarama Raju","Anakapalli","Ananthapuramu","Annamayya","Bapatla","Chittoor","East Godavari","Eluru","Guntur","Kadapa","Kakinada","Konaseema","Krishna","Kurnool","Nandyal","Nellore","NTR","Parvathipuram Manyam","Prakasam","Srikakulam","Sri Potti Sriramulu Nellore","Sri Sathya Sai","Tirupati","Visakhapatnam","Vizianagaram","West Godavari"],
+  "Arunachal Pradesh":["Anjaw","Capital Complex Itanagar","Changlang","Dibang Valley","East Kameng","East Siang","Kamle","Kra Daadi","Kurung Kumey","Lepa Rada","Lohit","Longding","Lower Dibang Valley","Lower Siang","Lower Subansiri","Namsai","Pakke-Kessang","Papum Pare","Shi Yomi","Siang","Tawang","Tirap","Upper Siang","Upper Subansiri","West Kameng","West Siang"],
+  "Assam":["Bajali","Baksa","Barpeta","Biswanath","Bongaigaon","Cachar","Charaideo","Chirang","Darrang","Dhemaji","Dhubri","Dibrugarh","Dima Hasao","Goalpara","Golaghat","Hailakandi","Hojai","Jorhat","Kamrup","Kamrup Metropolitan","Karbi Anglong","Karimganj","Kokrajhar","Lakhimpur","Majuli","Morigaon","Nagaon","Nalbari","Sivasagar","Sonitpur","South Salmara-Mankachar","Tamulpur","Tinsukia","Udalguri","West Karbi Anglong"],
+  "Bihar":["Araria","Arwal","Aurangabad","Banka","Begusarai","Bhagalpur","Bhojpur","Buxar","Darbhanga","East Champaran","Gaya","Gopalganj","Jamui","Jehanabad","Kaimur","Katihar","Khagaria","Kishanganj","Lakhisarai","Madhepura","Madhubani","Munger","Muzaffarpur","Nalanda","Nawada","Patna","Purnia","Rohtas","Saharsa","Samastipur","Saran","Sheikhpura","Sheohar","Sitamarhi","Siwan","Supaul","Vaishali","West Champaran"],
+  "Chhattisgarh":["Balod","Baloda Bazar","Balrampur","Bastar","Bemetara","Bijapur","Bilaspur","Dantewada","Dhamtari","Durg","Gariaband","Gaurela-Pendra-Marwahi","Janjgir-Champa","Jashpur","Kabirdham","Kanker","Khairagarh","Kondagaon","Korba","Koriya","Mahasamund","Manendragarh","Mohla-Manpur","Mungeli","Narayanpur","Raigarh","Raipur","Rajnandgaon","Sakti","Sarangarh-Bilaigarh","Sukma","Surajpur","Surguja"],
+  "Goa":["North Goa","South Goa"],
+  "Gujarat":["Ahmedabad","Amreli","Anand","Aravalli","Banaskantha","Bharuch","Bhavnagar","Botad","Chhota Udaipur","Dahod","Dang","Devbhoomi Dwarka","Gandhinagar","Gir Somnath","Jamnagar","Junagadh","Kheda","Kutch","Mahisagar","Mehsana","Morbi","Narmada","Navsari","Panchmahal","Patan","Porbandar","Rajkot","Sabarkantha","Surat","Surendranagar","Tapi","Vadodara","Valsad"],
+  "Haryana":["Ambala","Bhiwani","Charkhi Dadri","Faridabad","Fatehabad","Gurugram","Hisar","Jhajjar","Jind","Kaithal","Karnal","Kurukshetra","Mahendragarh","Nuh","Palwal","Panchkula","Panipat","Rewari","Rohtak","Sirsa","Sonipat","Yamunanagar"],
+  "Himachal Pradesh":["Bilaspur","Chamba","Hamirpur","Kangra","Kinnaur","Kullu","Lahaul and Spiti","Mandi","Shimla","Sirmaur","Solan","Una"],
+  "Jharkhand":["Bokaro","Chatra","Deoghar","Dhanbad","Dumka","East Singhbhum","Garhwa","Giridih","Godda","Gumla","Hazaribagh","Jamtara","Khunti","Koderma","Latehar","Lohardaga","Pakur","Palamu","Ramgarh","Ranchi","Sahebganj","Seraikela Kharsawan","Simdega","West Singhbhum"],
+  "Karnataka":["Bagalkote","Ballari","Belagavi","Bengaluru Rural","Bengaluru","Bidar","Chamarajanagara","Chikkaballapura","Chikkamagaluru","Chitradurga","Dakshina Kannada","Davanagere","Dharwad","Gadag","Hassan","Haveri","Hubballi","Kalaburagi","Kodagu","Kolar","Koppal","Mandya","Mangaluru","Mysuru","Raichur","Ramanagara","Shivamogga","Tumakuru","Udupi","Uttara Kannada","Vijayapura","Yadgir"],
+  "Kerala":["Alappuzha","Ernakulam","Idukki","Kannur","Kasaragod","Kollam","Kottayam","Kozhikode","Malappuram","Palakkad","Pathanamthitta","Thiruvananthapuram","Thrissur","Wayanad"],
+  "Madhya Pradesh":["Agar Malwa","Alirajpur","Anuppur","Ashoknagar","Balaghat","Barwani","Betul","Bhind","Bhopal","Burhanpur","Chhatarpur","Chhindwara","Damoh","Datia","Dewas","Dhar","Dindori","Guna","Gwalior","Harda","Hoshangabad","Indore","Jabalpur","Jhabua","Katni","Khandwa","Khargone","Maihar","Mandla","Mandsaur","Morena","Narsinghpur","Neemuch","Niwari","Panna","Raisen","Rajgarh","Ratlam","Rewa","Sagar","Satna","Sehore","Seoni","Shahdol","Shajapur","Sheopur","Shivpuri","Sidhi","Singrauli","Tikamgarh","Ujjain","Umaria","Vidisha"],
+  "Maharashtra":["Ahmednagar","Akola","Amravati","Aurangabad","Beed","Bhandara","Buldhana","Chandrapur","Dhule","Gadchiroli","Gondia","Hingoli","Jalgaon","Jalna","Kolhapur","Latur","Mumbai City","Mumbai Suburban","Nagpur","Nanded","Nandurbar","Nashik","Osmanabad","Palghar","Parbhani","Pune","Raigad","Ratnagiri","Sangli","Satara","Sindhudurg","Solapur","Thane","Wardha","Washim","Yavatmal"],
+  "Manipur":["Bishnupur","Chandel","Churachandpur","Imphal East","Imphal West","Jiribam","Kakching","Kamjong","Kangpokpi","Noney","Pherzawl","Senapati","Tamenglong","Tengnoupal","Thoubal","Ukhrul"],
+  "Meghalaya":["East Garo Hills","East Jaintia Hills","East Khasi Hills","Eastern West Khasi Hills","North Garo Hills","Ri Bhoi","South Garo Hills","South West Garo Hills","South West Khasi Hills","West Garo Hills","West Jaintia Hills","West Khasi Hills"],
+  "Mizoram":["Aizawl","Champhai","Hnahthial","Khawzawl","Kolasib","Lawngtlai","Lunglei","Mamit","Saiha","Saitual","Serchhip"],
+  "Nagaland":["Chumoukedima","Dimapur","Kiphire","Kohima","Longleng","Mokokchung","Mon","Niuland","Noklak","Peren","Phek","Shamator","Tseminyü","Tuensang","Wokha","Zunheboto"],
+  "Odisha":["Angul","Balangir","Balasore","Bargarh","Bhadrak","Boudh","Cuttack","Deogarh","Dhenkanal","Gajapati","Ganjam","Jagatsinghpur","Jajpur","Jharsuguda","Kalahandi","Kandhamal","Kendrapara","Kendujhar","Khordha","Koraput","Malkangiri","Mayurbhanj","Nabarangpur","Nayagarh","Nuapada","Puri","Rayagada","Sambalpur","Subarnapur","Sundargarh"],
+  "Punjab":["Amritsar","Barnala","Bathinda","Faridkot","Fatehgarh Sahib","Fazilka","Ferozepur","Gurdaspur","Hoshiarpur","Jalandhar","Kapurthala","Ludhiana","Malerkotla","Mansa","Moga","Mohali","Muktsar","Pathankot","Patiala","Rupnagar","Sangrur","Shaheed Bhagat Singh Nagar","Tarn Taran"],
+  "Rajasthan":["Ajmer","Alwar","Banswara","Baran","Barmer","Bharatpur","Bhilwara","Bikaner","Bundi","Chittorgarh","Churu","Dausa","Dholpur","Dungarpur","Ganganagar","Hanumangarh","Jaipur","Jaisalmer","Jalore","Jhalawar","Jhunjhunu","Jodhpur","Karauli","Kota","Nagaur","Pali","Pratapgarh","Rajsamand","Sawai Madhopur","Sikar","Sirohi","Tonk","Udaipur"],
+  "Sikkim":["East Sikkim","North Sikkim","Pakyong","Soreng","South Sikkim","West Sikkim"],
+  "Tamil Nadu":["Ariyalur","Chengalpattu","Chennai","Coimbatore","Cuddalore","Dharmapuri","Dindigul","Erode","Kallakurichi","Kanchipuram","Kanyakumari","Karur","Krishnagiri","Madurai","Mayiladuthurai","Nagapattinam","Namakkal","Nilgiris","Perambalur","Pudukkottai","Ramanathapuram","Ranipet","Salem","Sivaganga","Tenkasi","Thanjavur","Theni","Thoothukudi","Tiruchirappalli","Tirunelveli","Tirupathur","Tiruppur","Tiruvallur","Tiruvannamalai","Tiruvarur","Vellore","Villupuram","Virudhunagar"],
+  "Telangana":["Adilabad","Bhadradri Kothagudem","Hanmakonda","Hyderabad","Jagtial","Jangaon","Jayashankar Bhupalpally","Jogulamba Gadwal","Kamareddy","Karimnagar","Khammam","Kumuram Bheem","Mahabubabad","Mahabubnagar","Mancherial","Medak","Medchal-Malkajgiri","Mulugu","Nagarkurnool","Nalgonda","Narayanpet","Nirmal","Nizamabad","Peddapalli","Rajanna Sircilla","Rangareddy","Sangareddy","Siddipet","Suryapet","Vikarabad","Wanaparthy","Warangal","Yadadri Bhuvanagiri"],
+  "Tripura":["Dhalai","Gomati","Khowai","North Tripura","Sepahijala","Sipahijala","South Tripura","Unakoti","West Tripura"],
+  "Uttar Pradesh":["Agra","Aligarh","Ambedkar Nagar","Amethi","Amroha","Auraiya","Ayodhya","Azamgarh","Baghpat","Bahraich","Ballia","Balrampur","Banda","Bara Banki","Bareilly","Basti","Bhadohi","Bijnor","Budaun","Bulandshahr","Chandauli","Chitrakoot","Deoria","Etah","Etawah","Farrukhabad","Fatehpur","Firozabad","Gautam Buddha Nagar","Ghaziabad","Ghazipur","Gonda","Gorakhpur","Hamirpur","Hapur","Hardoi","Hathras","Jalaun","Jaunpur","Jhansi","Kannauj","Kanpur Dehat","Kanpur Nagar","Kasganj","Kaushambi","Kheri","Kushinagar","Lalitpur","Lucknow","Maharajganj","Mahoba","Mainpuri","Mathura","Mau","Meerut","Mirzapur","Moradabad","Muzaffarnagar","Pilibhit","Pratapgarh","Prayagraj","Raebareli","Rampur","Saharanpur","Sambhal","Sant Kabir Nagar","Shahjahanpur","Shamli","Shravasti","Siddharthnagar","Sitapur","Sonbhadra","Sultanpur","Unnao","Varanasi"],
+  "Uttarakhand":["Almora","Bageshwar","Chamoli","Champawat","Dehradun","Haridwar","Nainital","Pauri Garhwal","Pithoragarh","Rudraprayag","Tehri Garhwal","Udham Singh Nagar","Uttarkashi"],
+  "West Bengal":["Alipurduar","Bankura","Birbhum","Cooch Behar","Dakshin Dinajpur","Darjeeling","Hooghly","Howrah","Jalpaiguri","Jhargram","Kolkata","Malda","Murshidabad","Nadia","North 24 Parganas","Paschim Bardhaman","Paschim Medinipur","Purba Bardhaman","Purba Medinipur","Purulia","South 24 Parganas","Uttar Dinajpur"],
+  "Delhi":["Central Delhi","East Delhi","New Delhi","North Delhi","North East Delhi","North West Delhi","Shahdara","South Delhi","South East Delhi","South West Delhi","West Delhi"],
+  "Jammu & Kashmir":["Anantnag","Bandipora","Baramulla","Budgam","Doda","Ganderbal","Jammu","Kathua","Kishtwar","Kulgam","Kupwara","Poonch","Pulwama","Rajouri","Ramban","Reasi","Samba","Shopian","Srinagar","Udhampur"],
+  "Ladakh":["Kargil","Leh"],
+  "Chandigarh":["Chandigarh"],
+  "Puducherry":["Karaikal","Mahe","Puducherry","Yanam"],
+  "Andaman & Nicobar":["Nicobar","North & Middle Andaman","South Andaman"],
+  "Dadra & Nagar Haveli and Daman & Diu":["Dadra & Nagar Haveli","Daman","Diu"],
+  "Lakshadweep":["Lakshadweep"]
+};
+
+const ALL_STATES = Object.keys(INDIA_DISTRICTS).sort();
+
+// ===================== DATA =====================
+const TI = {Electrician:'⚡',Welding:'🔥',Sewing:'🧵','Mobile Repair':'📱',Coding:'💻',Plumbing:'🔧',HVAC:'❄️',Carpentry:'🪚',Fitter:'🔩',Mechanic:'🔧',Draughtsman:'📐',Surveying:'📏',Agriculture:'🌾',Healthcare:'🏥',Tourism:'✈️',Construction:'🏗️',Textile:'🧶'};
+const TRADES = ['All','Electrician','Welding','Sewing','Mobile Repair','Coding','Plumbing','HVAC','Carpentry','Fitter','Mechanic'];
+
+const COURSES = [
+  {id:1,title:'Electrical Wiring & Installation',trade:'Electrician',center:'Bengaluru ITI Center',state:'Karnataka',district:'Bengaluru',duration:3,dlabel:'3 Months',fee:0,seats:30,enrolled:22,start:'Jun 10, 2025',elig:'10th Pass',job:'guaranteed',jlabel:'Job Guaranteed',desc:'Learn domestic & industrial wiring, panel installation, safety standards.',color:'#f6c347'},
+  {id:2,title:'Advanced Welding (MIG/TIG)',trade:'Welding',center:'Mysuru Skill Hub',state:'Karnataka',district:'Mysuru',duration:2,dlabel:'2 Months',fee:0,seats:20,enrolled:18,start:'Jun 5, 2025',elig:'8th Pass',job:'guaranteed',jlabel:'Job Guaranteed',desc:'MIG & TIG welding for automotive and construction.',color:'#ff6b2b'},
+  {id:3,title:'Garment Making & Fashion Design',trade:'Sewing',center:'Hubballi Women Skill Center',state:'Karnataka',district:'Hubballi',duration:6,dlabel:'6 Months',fee:200,seats:25,enrolled:10,start:'Jul 1, 2025',elig:'No minimum',job:'likely',jlabel:'Likely Placement',desc:'Pattern cutting, stitching, boutique business setup.',color:'#e879f9'},
+  {id:4,title:'Mobile Phone Repair & Servicing',trade:'Mobile Repair',center:'Bengaluru NSDC Hub',state:'Karnataka',district:'Bengaluru',duration:3,dlabel:'3 Months',fee:0,seats:15,enrolled:12,start:'Jun 15, 2025',elig:'10th Pass',job:'guaranteed',jlabel:'Job Guaranteed',desc:'Diagnose and repair Android & iOS devices.',color:'#4f8ef7'},
+  {id:5,title:'Full Stack Web Development',trade:'Coding',center:'Bengaluru NSDC Hub',state:'Karnataka',district:'Bengaluru',duration:6,dlabel:'6 Months',fee:500,seats:40,enrolled:35,start:'Jun 20, 2025',elig:'12th Pass',job:'guaranteed',jlabel:'Job Guaranteed',desc:'HTML, CSS, JavaScript, React, Node.js. Get placed in top tech companies.',color:'#22c98a'},
+  {id:6,title:'Plumbing & Pipe Fitting',trade:'Plumbing',center:'Mangaluru ITI Center',state:'Karnataka',district:'Mangaluru',duration:2,dlabel:'2 Months',fee:0,seats:18,enrolled:8,start:'Jul 10, 2025',elig:'8th Pass',job:'likely',jlabel:'Likely Placement',desc:'Domestic plumbing, pipe fitting, sanitary installation.',color:'#22d3ee'},
+  {id:7,title:'AC & Refrigeration Technician',trade:'HVAC',center:'Belagavi Skill Center',state:'Karnataka',district:'Belagavi',duration:4,dlabel:'4 Months',fee:300,seats:20,enrolled:6,start:'Jun 25, 2025',elig:'10th Pass',job:'likely',jlabel:'Likely Placement',desc:'Installation, servicing, and repair of ACs and refrigerators.',color:'#a78bfa'},
+  {id:8,title:'Carpentry & Wood Work',trade:'Carpentry',center:'Mysuru Skill Hub',state:'Karnataka',district:'Mysuru',duration:3,dlabel:'3 Months',fee:0,seats:16,enrolled:9,start:'Jul 5, 2025',elig:'8th Pass',job:'possible',jlabel:'Possible Placement',desc:'Furniture making, wood polishing, interior carpentry.',color:'#fb923c'},
+  {id:9,title:'Two-Wheeler Mechanic',trade:'Mechanic',center:'Hubballi Skill Center',state:'Karnataka',district:'Hubballi',duration:2,dlabel:'2 Months',fee:0,seats:22,enrolled:15,start:'Jun 8, 2025',elig:'8th Pass',job:'guaranteed',jlabel:'Job Guaranteed',desc:'Engine overhauling, electrical systems, two-wheeler service.',color:'#f05252'},
+  {id:10,title:'Basic Computer & Tally',trade:'Coding',center:'Mangaluru ITI Center',state:'Karnataka',district:'Mangaluru',duration:3,dlabel:'3 Months',fee:100,seats:30,enrolled:20,start:'Jul 15, 2025',elig:'10th Pass',job:'likely',jlabel:'Likely Placement',desc:'MS Office, Tally ERP, accounting basics.',color:'#22c98a'},
+  {id:11,title:'Industrial Electrician – Advanced',trade:'Electrician',center:'Belagavi Skill Center',state:'Karnataka',district:'Belagavi',duration:6,dlabel:'6 Months',fee:0,seats:20,enrolled:4,start:'Aug 1, 2025',elig:'10th Pass',job:'guaranteed',jlabel:'Job Guaranteed',desc:'PLC programming, industrial panel wiring, factory automation.',color:'#f6c347'},
+  {id:12,title:'Fashion Embroidery & Textiles',trade:'Sewing',center:'Bengaluru NSDC Hub',state:'Karnataka',district:'Bengaluru',duration:2,dlabel:'2 Months',fee:150,seats:20,enrolled:11,start:'Jun 18, 2025',elig:'No minimum',job:'possible',jlabel:'Possible Placement',desc:'Hand and machine embroidery, textile design.',color:'#fb7185'},
+];
+
+const CENTERS = [
+  {name:'Govt. ITI Bengaluru (Acharya Vihar)',type:'Govt ITI',state:'Karnataka',city:'Bengaluru',address:'Rajajinagar, Bengaluru – 560010',phone:'080-23303030',trades:['Electrician','Fitter','Welding','COPA'],color:'#4f8ef7',ico:'🏭'},
+  {name:'Govt. ITI for Women, Bengaluru',type:'Govt ITI',state:'Karnataka',city:'Bengaluru',address:'Sadashivanagar, Bengaluru – 560080',phone:'080-23615050',trades:['Sewing','Textile','COPA'],color:'#e879f9',ico:'👩‍🎓'},
+  {name:'NSDC Skill Hub – Koramangala',type:'NSDC',state:'Karnataka',city:'Bengaluru',address:'5th Block, Koramangala, Bengaluru – 560034',phone:'080-25636363',trades:['Coding','Mobile Repair','Healthcare'],color:'#22c98a',ico:'💡'},
+  {name:'PMKK Bengaluru South',type:'PMKVY / PMKK',state:'Karnataka',city:'Bengaluru',address:'JP Nagar 6th Phase, Bengaluru – 560078',phone:'080-26584545',trades:['Electrician','Coding','HVAC'],color:'#ff6b2b',ico:'🎓'},
+  {name:'Govt. ITI Mysuru',type:'Govt ITI',state:'Karnataka',city:'Mysuru',address:'Saraswathipuram, Mysuru – 570009',phone:'0821-2548080',trades:['Welding','Fitter','Carpentry','Turner'],color:'#4f8ef7',ico:'🏭'},
+  {name:'Govt. ITI Hubballi',type:'Govt ITI',state:'Karnataka',city:'Hubballi',address:'Near KSRTC Depot, Hubballi – 580023',phone:'0836-2364747',trades:['Electrician','Plumbing','Mechanic'],color:'#4f8ef7',ico:'🏭'},
+  {name:'PMKK Mangaluru',type:'PMKVY / PMKK',state:'Karnataka',city:'Mangaluru',address:'Kadri Hills, Mangaluru – 575002',phone:'0824-2455050',trades:['Coding','HVAC','Healthcare'],color:'#ff6b2b',ico:'🎓'},
+  {name:'Govt. ITI Belagavi',type:'Govt ITI',state:'Karnataka',city:'Belagavi',address:'College Road, Belagavi – 590001',phone:'0831-2462121',trades:['Fitter','Welding','Electrician','Plumbing'],color:'#4f8ef7',ico:'🏭'},
+  {name:'JSS Skill Centre Mysuru',type:'JSS',state:'Karnataka',city:'Mysuru',address:'JSS Mahavidyapeetha, Suttur – 571107',phone:'0821-2548000',trades:['Agriculture','Textile','Sewing','Healthcare'],color:'#f6c347',ico:'🌿'},
+  {name:'Govt. ITI Aundh, Pune',type:'Govt ITI',state:'Maharashtra',city:'Pune',address:'Parihar Chowk, Aundh, Pune – 411007',phone:'020-25886060',trades:['Electrician','Fitter','Mechanic','COPA'],color:'#4f8ef7',ico:'🏭'},
+  {name:'Govt. ITI Worli, Mumbai',type:'Govt ITI',state:'Maharashtra',city:'Mumbai',address:'Worli, Mumbai – 400018',phone:'022-24966060',trades:['Welding','Fitter','Plumbing','Turner'],color:'#4f8ef7',ico:'🏭'},
+  {name:'NSDC Hub Mumbai – Andheri',type:'NSDC',state:'Maharashtra',city:'Mumbai',address:'MIDC, Andheri East, Mumbai – 400093',phone:'022-66996699',trades:['Coding','HVAC','Healthcare','Tourism'],color:'#22c98a',ico:'💡'},
+  {name:'PMKK Nashik',type:'PMKVY / PMKK',state:'Maharashtra',city:'Nashik',address:'Satpur MIDC, Nashik – 422007',phone:'0253-2350505',trades:['Electrician','Welding','Mechanic'],color:'#ff6b2b',ico:'🎓'},
+  {name:'Govt. ITI Nagpur',type:'Govt ITI',state:'Maharashtra',city:'Nagpur',address:'Hingna Road, Nagpur – 440016',phone:'0712-2721212',trades:['Fitter','Turner','Electrician','COPA'],color:'#4f8ef7',ico:'🏭'},
+  {name:'NSTI Mumbai',type:'NSTI',state:'Maharashtra',city:'Mumbai',address:'Sion, Mumbai – 400022',phone:'022-24076767',trades:['Advanced Welding','Instrumentation','Mechatronics'],color:'#a78bfa',ico:'🔬'},
+  {name:'Govt. ITI Meerut',type:'Govt ITI',state:'Uttar Pradesh',city:'Meerut',address:'Saket Colony, Meerut – 250001',phone:'0121-2764747',trades:['Electrician','Fitter','Welding','COPA'],color:'#4f8ef7',ico:'🏭'},
+  {name:'Govt. ITI Kanpur',type:'Govt ITI',state:'Uttar Pradesh',city:'Kanpur',address:'GT Road, Kanpur – 208001',phone:'0512-2302020',trades:['Mechanic','Fitter','Electrician'],color:'#4f8ef7',ico:'🏭'},
+  {name:'NSTI Kanpur',type:'NSTI',state:'Uttar Pradesh',city:'Kanpur',address:'GT Road, Kanpur – 208002',phone:'0512-2301818',trades:['Advanced Fitter','Mechatronics','Instrumentation'],color:'#a78bfa',ico:'🔬'},
+  {name:'PMKK Lucknow',type:'PMKVY / PMKK',state:'Uttar Pradesh',city:'Lucknow',address:'Gomti Nagar, Lucknow – 226010',phone:'0522-2729999',trades:['Coding','Healthcare','HVAC','Tourism'],color:'#ff6b2b',ico:'🎓'},
+  {name:'NSDC Hub Noida',type:'NSDC',state:'Uttar Pradesh',city:'Noida',address:'Sector 62, Noida – 201301',phone:'0120-4747474',trades:['Coding','Mobile Repair','HVAC'],color:'#22c98a',ico:'💡'},
+  {name:'Govt. ITI Chennai (Guindy)',type:'Govt ITI',state:'Tamil Nadu',city:'Chennai',address:'Guindy, Chennai – 600032',phone:'044-22501010',trades:['Fitter','Turner','Electrician','Mechanic'],color:'#4f8ef7',ico:'🏭'},
+  {name:'NSTI Chennai',type:'NSTI',state:'Tamil Nadu',city:'Chennai',address:'Taramani, Chennai – 600113',phone:'044-22541515',trades:['Advanced Welding','Mechatronics','Electronics'],color:'#a78bfa',ico:'🔬'},
+  {name:'PMKK Coimbatore',type:'PMKVY / PMKK',state:'Tamil Nadu',city:'Coimbatore',address:'SIDCO Industrial Estate, Coimbatore – 641021',phone:'0422-2312121',trades:['Electrician','Textile','Coding','HVAC'],color:'#ff6b2b',ico:'🎓'},
+  {name:'Govt. ITI Madurai',type:'Govt ITI',state:'Tamil Nadu',city:'Madurai',address:'Sellur, Madurai – 625002',phone:'0452-2603030',trades:['Fitter','Welding','Electrician','COPA'],color:'#4f8ef7',ico:'🏭'},
+  {name:'Govt. ITI Jaipur',type:'Govt ITI',state:'Rajasthan',city:'Jaipur',address:'Mansarovar, Jaipur – 302020',phone:'0141-2782020',trades:['Electrician','Fitter','COPA','Mechanic'],color:'#4f8ef7',ico:'🏭'},
+  {name:'PMKK Jodhpur',type:'PMKVY / PMKK',state:'Rajasthan',city:'Jodhpur',address:'Mandore Road, Jodhpur – 342006',phone:'0291-2636363',trades:['Handicrafts','Textile','Coding'],color:'#ff6b2b',ico:'🎓'},
+  {name:'Govt. ITI Ahmedabad',type:'Govt ITI',state:'Gujarat',city:'Ahmedabad',address:'Rakhial, Ahmedabad – 380023',phone:'079-22820202',trades:['Fitter','Turner','Welding','Electrician'],color:'#4f8ef7',ico:'🏭'},
+  {name:'NSTI Ahmedabad',type:'NSTI',state:'Gujarat',city:'Ahmedabad',address:'Naroda, Ahmedabad – 382330',phone:'079-22820404',trades:['Mechatronics','Advanced Fitter','Electronics'],color:'#a78bfa',ico:'🔬'},
+  {name:'PMKK Surat',type:'PMKVY / PMKK',state:'Gujarat',city:'Surat',address:'Udhna, Surat – 394210',phone:'0261-2892020',trades:['Textile','Sewing','Coding'],color:'#ff6b2b',ico:'🎓'},
+  {name:'Govt. ITI Kolkata (Ultadanga)',type:'Govt ITI',state:'West Bengal',city:'Kolkata',address:'Ultadanga, Kolkata – 700067',phone:'033-25551010',trades:['Fitter','Electrician','Welding','COPA'],color:'#4f8ef7',ico:'🏭'},
+  {name:'NSTI Kolkata',type:'NSTI',state:'West Bengal',city:'Kolkata',address:'Betor, Howrah – 711316',phone:'033-26681111',trades:['Mechatronics','Advanced Fitter','Electronics'],color:'#a78bfa',ico:'🔬'},
+  {name:'PMKK Durgapur',type:'PMKVY / PMKK',state:'West Bengal',city:'Durgapur',address:'Bidhannagar, Durgapur – 713212',phone:'0343-2546060',trades:['Electrician','Mechanic','Welding','Coding'],color:'#ff6b2b',ico:'🎓'},
+  {name:'Govt. ITI Bhopal',type:'Govt ITI',state:'Madhya Pradesh',city:'Bhopal',address:'Govindpura, Bhopal – 462023',phone:'0755-2587070',trades:['Electrician','Fitter','Mechanic','COPA'],color:'#4f8ef7',ico:'🏭'},
+  {name:'PMKK Indore',type:'PMKVY / PMKK',state:'Madhya Pradesh',city:'Indore',address:'Vijay Nagar, Indore – 452010',phone:'0731-4021212',trades:['Coding','HVAC','Healthcare','Mobile Repair'],color:'#ff6b2b',ico:'🎓'},
+  {name:'Govt. ITI Vijayawada',type:'Govt ITI',state:'Andhra Pradesh',city:'Vijayawada',address:'Machavaram, Vijayawada – 520004',phone:'0866-2493030',trades:['Electrician','Fitter','Welding','COPA'],color:'#4f8ef7',ico:'🏭'},
+  {name:'NSDC Hub Visakhapatnam',type:'NSDC',state:'Andhra Pradesh',city:'Visakhapatnam',address:'MVP Colony, Visakhapatnam – 530017',phone:'0891-2562121',trades:['Coding','Healthcare','HVAC','Tourism'],color:'#22c98a',ico:'💡'},
+  {name:'Govt. ITI Hyderabad (Sanathnagar)',type:'Govt ITI',state:'Telangana',city:'Hyderabad',address:'Sanathnagar, Hyderabad – 500018',phone:'040-23703030',trades:['Fitter','Electrician','Mechanic','Welding'],color:'#4f8ef7',ico:'🏭'},
+  {name:'NSTI Hyderabad',type:'NSTI',state:'Telangana',city:'Hyderabad',address:'Ramanthapur, Hyderabad – 500013',phone:'040-27042020',trades:['Mechatronics','Advanced Electronics','Instrumentation'],color:'#a78bfa',ico:'🔬'},
+  {name:'NSDC Hub HITEC City',type:'NSDC',state:'Telangana',city:'Hyderabad',address:'HITEC City, Hyderabad – 500081',phone:'040-44444555',trades:['Coding','AI & ML','Mobile Repair','Healthcare'],color:'#22c98a',ico:'💡'},
+  {name:'Govt. ITI Pusa, Delhi',type:'Govt ITI',state:'Delhi',city:'New Delhi',address:'Pusa Campus, New Delhi – 110012',phone:'011-25841818',trades:['Electrician','Fitter','COPA','Mechanic'],color:'#4f8ef7',ico:'🏭'},
+  {name:'NSTI New Delhi',type:'NSTI',state:'Delhi',city:'New Delhi',address:'Adhchini, New Delhi – 110017',phone:'011-26853535',trades:['Advanced Welding','Mechatronics','CNC Programming'],color:'#a78bfa',ico:'🔬'},
+  {name:'NSDC Hub Connaught Place',type:'NSDC',state:'Delhi',city:'New Delhi',address:'Barakhamba Road, New Delhi – 110001',phone:'011-43535353',trades:['Coding','Healthcare','Tourism','Mobile Repair'],color:'#22c98a',ico:'💡'},
+  {name:'Govt. ITI Thiruvananthapuram',type:'Govt ITI',state:'Kerala',city:'Thiruvananthapuram',address:'Thycaud, Thiruvananthapuram – 695014',phone:'0471-2322020',trades:['Electrician','Fitter','Mechanic','Electronics'],color:'#4f8ef7',ico:'🏭'},
+  {name:'NSDC Hub Kochi Infopark',type:'NSDC',state:'Kerala',city:'Kochi',address:'Infopark, Kakkanad, Kochi – 682042',phone:'0484-2413535',trades:['Coding','AI & ML','Healthcare','Tourism'],color:'#22c98a',ico:'💡'},
+  {name:'Govt. ITI Hisar',type:'Govt ITI',state:'Haryana',city:'Hisar',address:'Sector 14, Hisar – 125001',phone:'01662-230303',trades:['Electrician','Fitter','Mechanic','Welding'],color:'#4f8ef7',ico:'🏭'},
+  {name:'PMKK Gurugram',type:'PMKVY / PMKK',state:'Haryana',city:'Gurugram',address:'Sector 44, Gurugram – 122003',phone:'0124-4235050',trades:['Coding','HVAC','Automotive','Healthcare'],color:'#ff6b2b',ico:'🎓'},
+  {name:'Govt. ITI Ludhiana',type:'Govt ITI',state:'Punjab',city:'Ludhiana',address:'Miller Ganj, Ludhiana – 141003',phone:'0161-2560505',trades:['Mechanic','Electrician','Welding','Fitter'],color:'#4f8ef7',ico:'🏭'},
+  {name:'NSDC Hub Chandigarh',type:'NSDC',state:'Punjab',city:'Chandigarh',address:'Sector 22, Chandigarh – 160022',phone:'0172-2704040',trades:['Coding','HVAC','Healthcare','Mobile Repair'],color:'#22c98a',ico:'💡'},
+  {name:'Govt. ITI Patna',type:'Govt ITI',state:'Bihar',city:'Patna',address:'Phulwari Sharif, Patna – 801505',phone:'0612-2551010',trades:['Electrician','Fitter','Welding','COPA'],color:'#4f8ef7',ico:'🏭'},
+  {name:'PMKK Muzaffarpur',type:'PMKVY / PMKK',state:'Bihar',city:'Muzaffarpur',address:'Mithanpura, Muzaffarpur – 842002',phone:'0621-2240404',trades:['Agriculture','Coding','Electrician'],color:'#ff6b2b',ico:'🎓'},
+  {name:'Govt. ITI Ranchi',type:'Govt ITI',state:'Jharkhand',city:'Ranchi',address:'Namkum, Ranchi – 834010',phone:'0651-2261212',trades:['Electrician','Fitter','Welding','Mining'],color:'#4f8ef7',ico:'🏭'},
+  {name:'Govt. ITI Bhubaneswar',type:'Govt ITI',state:'Odisha',city:'Bhubaneswar',address:'Saheed Nagar, Bhubaneswar – 751007',phone:'0674-2545050',trades:['Electrician','Fitter','COPA','Electronics'],color:'#4f8ef7',ico:'🏭'},
+  {name:'NSTI Bhubaneswar',type:'NSTI',state:'Odisha',city:'Bhubaneswar',address:'Baramunda, Bhubaneswar – 751003',phone:'0674-2352020',trades:['Mechatronics','Advanced Electrician','CNC'],color:'#a78bfa',ico:'🔬'},
+  {name:'Govt. ITI Guwahati',type:'Govt ITI',state:'Assam',city:'Guwahati',address:'Basistha Road, Guwahati – 781029',phone:'0361-2341212',trades:['Electrician','Fitter','COPA','Mechanic'],color:'#4f8ef7',ico:'🏭'},
+  {name:'PMKK Dibrugarh',type:'PMKVY / PMKK',state:'Assam',city:'Dibrugarh',address:'AT Road, Dibrugarh – 786001',phone:'0373-2320404',trades:['Agriculture','Tea Processing','Coding'],color:'#ff6b2b',ico:'🎓'},
+  {name:'Govt. ITI Raipur',type:'Govt ITI',state:'Chhattisgarh',city:'Raipur',address:'Telibandha, Raipur – 492001',phone:'0771-2584040',trades:['Electrician','Fitter','Welding','COPA'],color:'#4f8ef7',ico:'🏭'},
+  {name:'Govt. ITI Shimla',type:'Govt ITI',state:'Himachal Pradesh',city:'Shimla',address:'Boileauganj, Shimla – 171005',phone:'0177-2652020',trades:['Electrician','Fitter','COPA','Tourism'],color:'#4f8ef7',ico:'🏭'},
+  {name:'Govt. ITI Panaji',type:'Govt ITI',state:'Goa',city:'Panaji',address:'St. Inez, Panaji – 403001',phone:'0832-2222121',trades:['Electrician','Fitter','Tourism','COPA'],color:'#4f8ef7',ico:'🏭'},
+  {name:'Govt. ITI Dehradun',type:'Govt ITI',state:'Uttarakhand',city:'Dehradun',address:'Clement Town, Dehradun – 248002',phone:'0135-2640404',trades:['Electrician','Fitter','Mechanic','Tourism'],color:'#4f8ef7',ico:'🏭'},
+  {name:'Govt. ITI Jammu',type:'Govt ITI',state:'Jammu & Kashmir',city:'Jammu',address:'Gandhi Nagar, Jammu – 180004',phone:'0191-2432020',trades:['Electrician','Fitter','COPA','Handicrafts'],color:'#4f8ef7',ico:'🏭'},
+  {name:'Govt. ITI Srinagar',type:'Govt ITI',state:'Jammu & Kashmir',city:'Srinagar',address:'Rangreth, Srinagar – 190007',phone:'0194-2493030',trades:['Handicrafts','Electrician','COPA','Tourism'],color:'#4f8ef7',ico:'🏭'},
+  {name:'PMKK Imphal',type:'PMKVY / PMKK',state:'Manipur',city:'Imphal',address:'Singjamei, Imphal – 795001',phone:'0385-2414040',trades:['Handicrafts','Weaving','Coding','Agriculture'],color:'#ff6b2b',ico:'🎓'},
+  {name:'Govt. ITI Shillong',type:'Govt ITI',state:'Meghalaya',city:'Shillong',address:'Mawkhar, Shillong – 793001',phone:'0364-2224040',trades:['Electrician','Fitter','COPA'],color:'#4f8ef7',ico:'🏭'},
+  {name:'Govt. ITI Agartala',type:'Govt ITI',state:'Tripura',city:'Agartala',address:'Assam Rifles Road, Agartala – 799001',phone:'0381-2322020',trades:['Electrician','Fitter','COPA','Mechanic'],color:'#4f8ef7',ico:'🏭'},
+  {name:'PMKK Gangtok',type:'PMKVY / PMKK',state:'Sikkim',city:'Gangtok',address:'Development Area, Gangtok – 737101',phone:'03592-202020',trades:['Tourism','Healthcare','Coding'],color:'#ff6b2b',ico:'🎓'},
+];
+
+const STORIES = [
+  {name:'Ravi Kumar',trade:'Welding',course:'Advanced Welding (MIG/TIG)',job:'Welder – L&T Construction',salary:'₹22,000/mo',quote:'I had no money, but this free course changed my life completely.',emo:'👨‍🔧'},
+  {name:'Priya Nair',trade:'Sewing',course:'Garment Making',job:'Own Boutique – Hubballi',salary:'₹35,000/mo',quote:'Now I am my own boss. Namma-Skill made it possible.',emo:'👩‍💼'},
+  {name:'Suresh M.',trade:'Coding',course:'Full Stack Web Dev',job:'Junior Developer – Infosys',salary:'₹28,000/mo',quote:'From a village in Mysuru to a tech job in Bengaluru!',emo:'👨‍💻'},
+  {name:'Lakshmi B.',trade:'Mobile Repair',course:'Mobile Phone Repair',job:'Own Repair Shop',salary:'₹18,000/mo',quote:'My shop earns more than my old factory job.',emo:'👩‍🔧'},
+  {name:'Ajay Patil',trade:'Electrician',course:'Electrical Wiring',job:'Electrician – Prestige Group',salary:'₹24,000/mo',quote:'The trainer found me a job before I even finished the course!',emo:'⚡'},
+  {name:'Meena R.',trade:'HVAC',course:'AC & Refrigeration',job:'Service Technician – Voltas',salary:'₹20,000/mo',quote:'I was the only woman in the batch. Now I am the top earner.',emo:'❄️'},
+  {name:'Kiran S.',trade:'Carpentry',course:'Carpentry & Wood Work',job:'Own Furniture Workshop',salary:'₹30,000/mo',quote:'Three employees, my own workshop. Dreams do come true.',emo:'🪚'},
+  {name:'Divya G.',trade:'Coding',course:'Basic Computer & Tally',job:'Accountant – Retail Chain',salary:'₹16,000/mo',quote:'The Tally course got me my first white-collar job.',emo:'💻'},
+];
+
+// ===================== FIREBASE CONFIG (moved to <head>) =====================
+
+// ===================== FIREBASE HELPERS =====================
+
+// Save application to Firestore
+async function saveApplicationToFirebase(app) {
+  try {
+    await db.collection('applications').add({
+      ...app,
+      createdAt: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    console.log('Application saved to Firebase');
+  } catch(e) {
+    console.warn('Firebase save failed:', e.message);
+  }
+}
+
+// Save user profile to Firestore
+async function saveUserToFirebase(uid, data) {
+  try {
+    await db.collection('users').doc(uid).set(data, { merge: true });
+  } catch(e) {
+    console.warn('User save failed:', e.message);
+  }
+}
+
+// Load applications for current user from Firestore
+async function loadMyApplications(uid) {
+  try {
+    const snap = await db.collection('applications').where('uid','==',uid).orderBy('createdAt','desc').get();
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  } catch(e) {
+    console.warn('Load apps failed:', e.message);
+    return [];
+  }
+}
+
+// Load applications for a center from Firestore
+async function loadCenterApplications(centerName) {
+  try {
+    const snap = await db.collection('applications').where('center','==',centerName).orderBy('createdAt','desc').get();
+    return snap.docs.map(d => ({ id: d.id, ...d.data() }));
+  } catch(e) {
+    console.warn('Load center apps failed:', e.message);
+    return [];
+  }
+}
+
+// Update application status in Firestore
+async function updateAppStatusFirebase(docId, status) {
+  try {
+    await db.collection('applications').doc(docId).update({ status, updatedAt: firebase.firestore.FieldValue.serverTimestamp() });
+  } catch(e) {
+    console.warn('Status update failed:', e.message);
+  }
+}
+
+// Update seat count in Firestore
+async function updateSeatsFirebase(courseId, enrolled) {
+  try {
+    await db.collection('courses').doc(String(courseId)).set({ courseId, enrolled, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+  } catch(e) {
+    console.warn('Seat update failed:', e.message);
+  }
+}
+
+// Listen for real-time seat updates
+function listenSeats() {
+  db.collection('courses').onSnapshot(snap => {
+    snap.docs.forEach(d => {
+      const data = d.data();
+      const course = COURSES.find(c => c.id === data.courseId);
+      if (course && data.enrolled !== undefined) {
+        course.enrolled = data.enrolled;
+      }
+    });
+    renderHomeCourses();
+    renderAllCourses();
+  }, err => console.warn('Seat listener error:', err));
+}
+
+// ===================== EMAILJS CONFIG =====================
+const EMAILJS_SERVICE  = 'service_7588c5i';
+const EMAILJS_TEMPLATE = 'template_rob6rkd';
+const EMAILJS_KEY      = 'IWb2v9igXIY8kkDYj';
+emailjs.init(EMAILJS_KEY);
+
+// ===================== STATE =====================
+let selectedTrade='All', coursesSelectedTrade='All';
+let applications=[], pingedCourses=new Set(), regTrades=new Set();
+let selectedState='All', currentApplyId=null;
+const CENTER_STATES=['All',...new Set(CENTERS.map(c=>c.state))].sort((a,b)=>a==='All'?-1:a.localeCompare(b));
+
+// ===================== HELPERS =====================
+function populateStateSelect(selId){
+  const sel=document.getElementById(selId);
+  const cur=sel.value;
+  sel.innerHTML='<option value="">All States</option>'+ALL_STATES.map(s=>`<option value="${s}"${s===cur?'selected':''}>${s}</option>`).join('');
+}
+function populateDistrictSelect(selId, state){
+  const sel=document.getElementById(selId);
+  sel.innerHTML='<option value="">All Districts</option>';
+  if(state && INDIA_DISTRICTS[state]){
+    INDIA_DISTRICTS[state].forEach(d=>{ const o=document.createElement('option'); o.value=d; o.textContent=d; sel.appendChild(o); });
+  }
+}
+
+// ===================== INIT =====================
+document.addEventListener('DOMContentLoaded',()=>{
+  updateClock(); setInterval(updateClock,1000);
+  setTimeout(()=>document.getElementById('splash').classList.add('hide'),2500);
+  setEmailMode('login');
+  initLogin();
+  // Populate all state dropdowns
+  populateStateSelect('stateFilter');
+  populateStateSelect('appState');
+  populateStateSelect('regState');
+  // Set Karnataka as default for registration
+  document.getElementById('regState').value='Karnataka';
+  renderHomeChips(); renderCoursesChips(); renderHomeCourses();
+  renderAllCourses(); renderStateChips(); renderCenters();
+  renderStories(); renderRegChips(); renderProfileApps();
+  document.getElementById('totalCenters').textContent=CENTERS.length+'+';
+});
+
+function updateClock(){
+  const n=new Date();
+  document.getElementById('clock').textContent=String(n.getHours()).padStart(2,'0')+':'+String(n.getMinutes()).padStart(2,'0');
+}
+
+// ===================== SCREEN =====================
+function switchScreen(name){
+  document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.remove('active'));
+  document.getElementById('screen-'+name).classList.add('active');
+  document.getElementById('nav-'+name).classList.add('active');
+  document.getElementById('scrollArea').scrollTo(0,0);
+  if(name==='profile') renderProfileApps();
+}
+
+// ===================== CHIPS =====================
+function renderHomeChips(){
+  document.getElementById('homeTradeChips').innerHTML=TRADES.map(t=>
+    `<div class="hchip ${t===selectedTrade?'active':''}" onclick="homeSelectTrade('${t}')">${t!=='All'?(TI[t]||'🛠️')+' ':''}${t}</div>`
+  ).join('');
+}
+function homeSelectTrade(t){selectedTrade=t;renderHomeChips();renderHomeCourses();}
+
+function renderCoursesChips(){
+  document.getElementById('coursesTradeChips').innerHTML=TRADES.map(t=>
+    `<div class="fchip ${t===coursesSelectedTrade?'active':''}" onclick="csSelectTrade('${t}')">${t!=='All'?(TI[t]||'')+'  ':''}${t}</div>`
+  ).join('');
+}
+function csSelectTrade(t){coursesSelectedTrade=t;renderCoursesChips();renderAllCourses();}
+
+function renderStateChips(){
+  document.getElementById('stateChips').innerHTML=CENTER_STATES.map(s=>
+    `<div class="fchip ${s===selectedState?'active':''}" onclick="selectState('${s}')">${s}</div>`
+  ).join('');
+}
+function selectState(s){selectedState=s;renderStateChips();renderCenters();}
+
+// State/District filter for Courses screen
+function onStateFilterChange(){
+  const state=document.getElementById('stateFilter').value;
+  populateDistrictSelect('distFilter', state);
+  renderAllCourses();
+}
+// State/District filter for Apply sheet
+function updateAppDistricts(){
+  const state=document.getElementById('appState').value;
+  populateDistrictSelect('appDistrict', state);
+}
+
+// ===================== HOME SEARCH =====================
+function homeSearchFilter(){
+  const q=document.getElementById('homeSearch').value.toLowerCase();
+  if(q){selectedTrade='All';renderHomeChips();}
+  renderHomeCourses(q);
+}
+
+// ===================== COURSES =====================
+function renderHomeCourses(sq=''){
+  const q=sq||document.getElementById('homeSearch').value.toLowerCase();
+  let list=COURSES.filter(c=>{
+    if(selectedTrade!=='All'&&c.trade!==selectedTrade) return false;
+    if(q&&!c.title.toLowerCase().includes(q)&&!c.trade.toLowerCase().includes(q)&&!c.center.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  const show=(q||selectedTrade!=='All')?list:list.slice(0,5);
+  document.getElementById('homeCourseList').innerHTML=show.length
+    ?show.map((c,i)=>courseCardHTML(c,i)).join('')
+    :`<div class="no-results"><div class="nr-ico">🔍</div><div class="nr-t">No courses found</div><div class="nr-s">Try a different search</div></div>`;
+}
+
+function renderAllCourses(){
+  const dur=document.getElementById('durFilter').value;
+  const state=document.getElementById('stateFilter').value;
+  const dist=document.getElementById('distFilter').value;
+  const job=document.getElementById('jobFilter').value;
+  const list=COURSES.filter(c=>{
+    if(coursesSelectedTrade!=='All'&&c.trade!==coursesSelectedTrade) return false;
+    if(dur==='short'&&c.duration>3) return false;
+    if(dur==='long'&&c.duration<=3) return false;
+    if(state&&c.state!==state) return false;
+    if(dist&&c.district!==dist) return false;
+    if(job&&c.job!==job) return false;
+    return true;
+  });
+  document.getElementById('coursesCount').textContent=list.length;
+  document.getElementById('allCourseList').innerHTML=list.length
+    ?list.map((c,i)=>courseCardHTML(c,i)).join('')
+    :`<div class="no-results"><div class="nr-ico">🔍</div><div class="nr-t">No courses found</div><div class="nr-s">Try different filters</div></div>`;
+}
+
+function courseCardHTML(c,i){
+  const pct=Math.round((c.enrolled/c.seats)*100);
+  const left=c.seats-c.enrolled;
+  const fc=pct>80?'var(--red)':pct>50?'var(--yellow)':'var(--green)';
+  const pinged=pingedCourses.has(c.id);
+  const jpCls={guaranteed:'g',likely:'l',possible:'p'}[c.job];
+  return `
+  <div class="ccard" style="animation-delay:${i*.05}s">
+    <div class="ccard-bar" style="background:${c.color}"></div>
+    <div class="ccard-inner">
+      <div class="ccard-top">
+        <div class="trade-tag" style="color:${c.color};border-color:${c.color}33;background:${c.color}11">${TI[c.trade]||'🛠️'} ${c.trade}</div>
+        <div class="jp ${jpCls}">${c.jlabel}</div>
+      </div>
+      <div class="ccard-title">${c.title}</div>
+      <div class="ccard-loc">📍 ${c.center} · ${c.state}</div>
+      <div class="meta-row">
+        <div class="mpill">📅 ${c.start}</div>
+        <div class="mpill">⏱️ ${c.dlabel}</div>
+        <div class="mpill">🎓 ${c.elig}</div>
+        <div class="mpill ${c.fee===0?'free':''}">💰 ${c.fee===0?'FREE':'₹'+c.fee}</div>
+      </div>
+      <div class="seats-info"><div class="si-txt">Seats (${c.enrolled}/${c.seats})</div><div class="si-left" style="color:${fc}">${left} left</div></div>
+      <div class="track"><div class="track-f" style="width:${pct}%;background:${fc}"></div></div>
+      <div class="card-btns">
+        <div class="cbtn cbtn-p" onclick="openApplySheet(${c.id})">Apply Now</div>
+        <div class="cbtn cbtn-o" onclick="openDetailSheet(${c.id})">Details</div>
+        <div class="ping-btn ${pinged?'on':''}" onclick="pingCourse(${c.id})">${pinged?'🔔':'🔕'}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// ===================== PING =====================
+function pingCourse(id){
+  if(pingedCourses.has(id)){toast('i','Already pinged! Trainer will contact you.');return;}
+  pingedCourses.add(id);
+  const c=COURSES.find(x=>x.id===id);
+  toast('s',`🔔 Interest ping sent for "${c.title}"!`);
+  addNotif('✅',`Interest ping sent for "${c.title}". Trainer will call you.`);
+  renderHomeCourses(); renderAllCourses();
+}
+
+// ===================== CENTERS =====================
+function renderCenters(){
+  const q=document.getElementById('centerSearch').value.toLowerCase();
+  const type=document.getElementById('centerTypeFilter').value;
+  const list=CENTERS.filter(c=>{
+    if(selectedState!=='All'&&c.state!==selectedState) return false;
+    if(type&&c.type!==type) return false;
+    if(q&&!c.name.toLowerCase().includes(q)&&!c.city.toLowerCase().includes(q)&&!c.state.toLowerCase().includes(q)&&!c.address.toLowerCase().includes(q)) return false;
+    return true;
+  });
+  document.getElementById('centersCount').textContent=list.length;
+  const typeColors={'Govt ITI':'var(--blue)','NSDC':'var(--green)','PMKVY / PMKK':'var(--accent)','NSTI':'var(--purple)','Skill India Hub':'var(--yellow)','JSS':'var(--yellow)'};
+  document.getElementById('centerCards').innerHTML=list.length
+    ?list.map(c=>{
+        const col=typeColors[c.type]||'var(--text2)';
+        return `
+        <div class="cen-card" onclick="openCenDetail(${CENTERS.indexOf(c)})">
+          <div class="cen-ico" style="background:${col}18;border:1px solid ${col}30">${c.ico}</div>
+          <div class="cen-info">
+            <div class="cen-name">${c.name}</div>
+            <div style="margin-bottom:5px"><span class="cen-type-badge" style="background:${col}15;color:${col};border:1px solid ${col}30">${c.type}</span></div>
+            <div class="cen-loc">📍 ${c.address} · ${c.state}<br>📞 ${c.phone}</div>
+            <div class="cen-trades">${c.trades.map(t=>`<div class="ct-pill">${TI[t]||'🛠️'} ${t}</div>`).join('')}</div>
+          </div>
+        </div>`;
+      }).join('')
+    :`<div class="no-results"><div class="nr-ico">🗺️</div><div class="nr-t">No centers found</div><div class="nr-s">Try a different state or search</div></div>`;
+}
+
+function openCenDetail(idx){
+  const c=CENTERS[idx];
+  const typeColors={'Govt ITI':'var(--blue)','NSDC':'var(--green)','PMKVY / PMKK':'var(--accent)','NSTI':'var(--purple)','Skill India Hub':'var(--yellow)','JSS':'var(--yellow)'};
+  const col=typeColors[c.type]||'var(--text2)';
+  document.getElementById('cenDetailBody').innerHTML=`
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+      <div style="width:52px;height:52px;border-radius:14px;background:${col}18;border:1px solid ${col}30;display:grid;place-items:center;font-size:1.5rem">${c.ico}</div>
+      <div>
+        <div style="font-family:'Nunito',sans-serif;font-weight:800;font-size:1rem;margin-bottom:3px">${c.name}</div>
+        <span style="background:${col}15;color:${col};border:1px solid ${col}30;padding:2px 9px;border-radius:99px;font-size:.65rem;font-weight:700">${c.type}</span>
+      </div>
+    </div>
+    <div class="sum-box">
+      <div class="sum-lbl">Center Information</div>
+      ${[['State',c.state],['City',c.city],['Address',c.address],['Phone',c.phone],['Type',c.type]].map(([k,v])=>`<div class="sum-r"><div class="sum-k">${k}</div><div class="sum-val">${v}</div></div>`).join('')}
+    </div>
+    <div class="sum-box">
+      <div class="sum-lbl">Trades Offered</div>
+      <div style="display:flex;flex-wrap:wrap;gap:7px;padding-top:4px">
+        ${c.trades.map(t=>`<div class="ct-pill" style="font-size:.72rem;padding:4px 10px">${TI[t]||'🛠️'} ${t}</div>`).join('')}
+      </div>
+    </div>`;
+  openSheet('cenDetailSheet');
+}
+
+// ===================== STORIES =====================
+function renderStories(){
+  document.getElementById('storyList').innerHTML=STORIES.map(s=>`
+    <div class="scard">
+      <div class="scard-top">
+        <div class="scard-emo">${s.emo}</div>
+        <div>
+          <div class="scard-name">${s.name}</div>
+          <div class="scard-trade">${s.trade} · ${s.course}</div>
+          <div class="scard-job">💼 ${s.job}</div>
+          <div class="scard-sal">💰 ${s.salary}</div>
+        </div>
+      </div>
+      <div class="scard-quote">${s.quote}</div>
+    </div>`).join('');
+}
+
+// ===================== APPLY =====================
+function openApplySheet(id){
+  currentApplyId=id;
+  const c=id?COURSES.find(x=>x.id===id):null;
+  document.getElementById('applyInfoBox').innerHTML=c
+    ?`<div class="cib-t">${c.title}</div><div class="cib-m">📍 ${c.center} · ${c.state}<br>📅 ${c.start} · ⏱️ ${c.dlabel} · 💰 ${c.fee===0?'FREE':'₹'+c.fee}</div>`
+    :`<div class="cib-m">Apply to any course — we'll find the best match for you.</div>`;
+  ['appName','appAge','appPhone','appReason'].forEach(fid=>document.getElementById(fid).value='');
+  document.getElementById('appState').value='';
+  populateDistrictSelect('appDistrict','');
+  openSheet('applySheet');
+}
+
+function submitApplication(){
+  const name=document.getElementById('appName').value.trim();
+  const phone=document.getElementById('appPhone').value.trim();
+  if(!name){toast('e','Please enter your full name');return;}
+  if(!phone||!/^\d{10}$/.test(phone)){toast('e','Enter a valid 10-digit phone number');return;}
+  const c=currentApplyId?COURSES.find(x=>x.id===currentApplyId):null;
+  const app={
+    id:Date.now(),name,phone,
+    age:document.getElementById('appAge').value||'N/A',
+    state:document.getElementById('appState').value||'—',
+    district:document.getElementById('appDistrict').value||'—',
+    edu:document.getElementById('appEdu').value,
+    reason:document.getElementById('appReason').value.trim()||'Not provided',
+    course:c?c.title:'Open Application',
+    center:c?c.center:'—',
+    trade:c?c.trade:'—',
+    start:c?c.start:'—',
+    date:new Date().toLocaleDateString('en-IN'),
+    status:'Submitted ✓',
+  };
+  applications.push(app);
+  closeSheet('applySheet');
+  toast('i','📤 Saving application…');
+  addNotif('📋',`Application for "${app.course}" submitted by ${name}`);
+  renderHomeCourses(); renderAllCourses(); renderProfileApps();
+
+  // Save to Firebase Firestore
+  const session = getSession();
+  saveApplicationToFirebase({ ...app, uid: session ? session.uid : 'guest' });
+
+  // Send email via EmailJS
+  emailjs.send(EMAILJS_SERVICE, EMAILJS_TEMPLATE, {
+    name:    app.name,
+    phone:   app.phone,
+    age:     app.age,
+    state:   app.state,
+    district:app.district,
+    edu:     app.edu,
+    course:  app.course,
+    center:  app.center,
+    reason:  app.reason,
+    date:    app.date,
+  }).then(()=>{
+    toast('s',`✅ Application submitted & email sent for ${name}!`);
+    setTimeout(()=>openSummarySheet(app),600);
+  }).catch(err=>{
+    console.error('EmailJS error:',err);
+    toast('e','⚠️ Submitted locally but email failed. Check EmailJS config.');
+    setTimeout(()=>openSummarySheet(app),600);
+  });
+}
+
+// ===================== DETAIL SHEET =====================
+function openDetailSheet(id){
+  const c=COURSES.find(x=>x.id===id);
+  const pct=Math.round((c.enrolled/c.seats)*100);
+  const left=c.seats-c.enrolled;
+  const fc=pct>80?'var(--red)':pct>50?'var(--yellow)':'var(--green)';
+  document.getElementById('detailBody').innerHTML=`
+    <div style="height:3px;background:${c.color};border-radius:3px;margin-bottom:12px"></div>
+    <div style="font-family:'Nunito',sans-serif;font-size:1rem;font-weight:800;margin-bottom:5px">${c.title}</div>
+    <div style="font-size:.8rem;color:var(--text2);line-height:1.6;margin-bottom:14px">${c.desc}</div>
+    <div class="sum-box">
+      <div class="sum-lbl">Course Details</div>
+      ${[['Trade',(TI[c.trade]||'🛠️')+' '+c.trade],['Center',c.center],['State',c.state],['District',c.district],['Start',c.start],['Duration',c.dlabel],['Fee',c.fee===0?'<span style="color:var(--green);font-weight:700">FREE</span>':'₹'+c.fee],['Eligibility',c.elig],['Seats Left',`<span style="color:${fc};font-weight:700">${left}/${c.seats}</span>`],['Job Status',c.jlabel]].map(([k,v])=>`<div class="sum-r"><div class="sum-k">${k}</div><div class="sum-val">${v}</div></div>`).join('')}
+    </div>`;
+  document.getElementById('detailFooter').innerHTML=`
+    <button class="sbtn sbtn-o" onclick="closeSheet('detailSheet')">Close</button>
+    <button class="sbtn sbtn-p" onclick="closeSheet('detailSheet');openApplySheet(${id})">Apply Now →</button>`;
+  openSheet('detailSheet');
+}
+
+// ===================== SUMMARY =====================
+function openSummarySheet(app){
+  document.getElementById('summaryBody').innerHTML=`
+    <div class="sum-box">
+      <div class="sum-lbl">Candidate Summary</div>
+      <div style="font-size:.65rem;color:var(--text3);margin-bottom:10px">Generated · ${app.date} · Namma-Skill</div>
+      ${[['Full Name',app.name],['Phone',app.phone],['Age',app.age],['State',app.state],['District',app.district],['Education',app.edu],['Course',app.course],['Center',app.center],['Trade',app.trade],['Batch Start',app.start],['Status','<span style="color:var(--green);font-weight:700">'+app.status+'</span>']].map(([k,v])=>`<div class="sum-r"><div class="sum-k">${k}</div><div class="sum-val">${v}</div></div>`).join('')}
+      ${app.reason?`<div style="margin-top:10px;padding:9px 11px;background:var(--card);border-radius:var(--r-sm);font-size:.76rem;color:var(--text2);font-style:italic;border-left:3px solid var(--accent)">"${app.reason}"</div>`:''}
+    </div>
+    <div style="font-size:.7rem;color:var(--text3);text-align:center">Shared with skill center trainer for review.</div>`;
+  openSheet('summarySheet');
+}
+
+// ===================== REGISTER =====================
+function renderRegChips(){
+  const trades=TRADES.filter(t=>t!=='All');
+  document.getElementById('regTradeChips').innerHTML=trades.map(t=>
+    `<div class="hchip blue ${regTrades.has(t)?'active':''}" onclick="toggleRT('${t}')" style="font-size:.72rem;padding:6px 11px">${TI[t]||'🛠️'} ${t}</div>`
+  ).join('');
+}
+function toggleRT(t){regTrades.has(t)?regTrades.delete(t):regTrades.add(t);renderRegChips();}
+function submitRegister(){
+  const name=document.getElementById('regName').value.trim();
+  const phone=document.getElementById('regPhone').value.trim();
+  if(!name||!phone){toast('e','Please fill Name and Phone');return;}
+  const state=document.getElementById('regState').value;
+  document.getElementById('profileName').textContent=name;
+  document.getElementById('profileSub').textContent=`📞 ${phone} · ${state||'India'}`;
+  document.getElementById('profileAvatar').textContent=name[0].toUpperCase();
+  closeSheet('registerSheet');
+  toast('s',`🎉 Welcome ${name}! You'll get alerts for new batches.`);
+  addNotif('🎉',`${name} registered successfully!`);
+}
+
+// ===================== PROFILE APPS =====================
+function renderProfileApps(){
+  document.getElementById('appsCount').textContent=applications.length;
+  const el=document.getElementById('profileAppList');
+  if(!applications.length){
+    el.innerHTML=`<div class="empty-state"><div class="es-ico">📋</div><div class="es-t">No applications yet</div><div class="es-s">Apply for a course to see it here</div></div>`;
+    return;
+  }
+  el.innerHTML=applications.map((app,i)=>`
+    <div class="acard">
+      <div class="ac-course">${app.course}</div>
+      <div class="ac-meta">📍 ${app.center}<br>📅 Applied ${app.date} · 👤 ${app.name}</div>
+      <div class="ac-footer">
+        <div class="ac-status">${app.status}</div>
+        <div class="ac-view" onclick="openSummarySheet(applications[${i}])">View Summary →</div>
+      </div>
+    </div>`).join('');
+}
+
+// ===================== NOTIF =====================
+function addNotif(ico,text){
+  const list=document.getElementById('notifList');
+  const item=document.createElement('div');
+  item.className='ni';
+  item.innerHTML=`<div class="ni-ico">${ico}</div><div><div class="ni-text">${text}</div><div class="ni-time">Just now</div></div>`;
+  list.prepend(item);
+  const b=document.getElementById('notifBadge');
+  b.textContent=parseInt(b.textContent||0)+1;
+  b.style.display='grid';
+}
+function clearNotifs(){
+  document.getElementById('notifList').innerHTML=`<div style="text-align:center;padding:22px;color:var(--text3);font-size:.8rem">No notifications</div>`;
+  document.getElementById('notifBadge').style.display='none';
+}
+
+// ===================== SHEETS =====================
+function openSheet(id){document.getElementById(id).classList.add('open')}
+function closeSheet(id){document.getElementById(id).classList.remove('open')}
+document.querySelectorAll('.sheet-overlay').forEach(el=>{
+  el.addEventListener('click',e=>{if(e.target===el)closeSheet(el.id)});
+});
+let ty=0;
+document.querySelectorAll('.sheet').forEach(s=>{
+  s.addEventListener('touchstart',e=>{ty=e.touches[0].clientY},{passive:true});
+  s.addEventListener('touchend',e=>{if(e.changedTouches[0].clientY-ty>80&&s.scrollTop<=0)closeSheet(s.closest('.sheet-overlay').id)},{passive:true});
+});
+
+// ===================== TOAST =====================
+function toast(type,msg){
+  const w=document.getElementById('toastWrap');
+  const t=document.createElement('div');
+  t.className=`toast ${type}`;
+  t.innerHTML=`<span>${{s:'✅',e:'❌',i:'ℹ️'}[type]}</span><span>${msg}</span>`;
+  w.appendChild(t);
+  setTimeout(()=>{t.style.transition='all .3s';t.style.opacity='0';t.style.transform='translateY(8px) scale(.94)'},3000);
+  setTimeout(()=>t.remove(),3400);
+}
+</script>
+</body>
+</html>
